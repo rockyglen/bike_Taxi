@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 # Load raw data
-df = pd.read_csv("data/top3_stations_output.csv")
+df = pd.read_csv("top3_stations_output.csv")
 
 # Preprocess
 df.columns = df.columns.str.strip().str.lower()
