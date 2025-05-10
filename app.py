@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import hopsworks
-from datetime import datetime
+import pytz
+from datetime import datetime, timedelta
 import altair as alt
 import os
 from dotenv import load_dotenv
@@ -23,7 +24,7 @@ project = hopsworks.login(
 fs = project.get_feature_store()
 
 # -----------------------------
-# Load Prediction Feature Group
+# Load Predictions
 # -----------------------------
 pred_fg = fs.get_feature_group("citi_bike_predictions", version=1)
 pred_df = pred_fg.read()
@@ -31,32 +32,27 @@ pred_df['prediction_time'] = pd.to_datetime(pred_df['prediction_time'])
 pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
 
 # -----------------------------
-# Let user select a target hour
+# Generate Next 5 Hour Options (EST)
 # -----------------------------
-available_hours = sorted(pred_df['target_hour'].unique())
-default_idx = len(available_hours) - 1  # latest prediction
+eastern = pytz.timezone("America/New_York")
+now_est = datetime.now(pytz.utc).astimezone(eastern).replace(minute=0, second=0, microsecond=0)
+next_5_est = [(now_est + timedelta(hours=i)) for i in range(1, 6)]
+option_map = {t.strftime("%Y-%m-%d %H:%M %Z"): t for t in next_5_est}
+selected_label = st.selectbox("🕒 Select a Target Hour (EST)", list(option_map.keys()))
+selected_time = option_map[selected_label]
 
-selected_hour = st.selectbox(
-    "🕒 Select Target Hour to View Prediction",
-    options=available_hours,
-    index=default_idx
-)
-
-# Filter for selected prediction
-selected_pred = pred_df[pred_df['target_hour'] == selected_hour]
-
-if not selected_pred.empty:
-    pred_val = int(selected_pred['predicted_trip_count'].values[0])
-    st.metric(
-        label="📈 Predicted Trip Count",
-        value=pred_val,
-        delta=str(selected_hour)
-    )
+# -----------------------------
+# Find prediction for selected time
+# -----------------------------
+matched = pred_df[pred_df['target_hour'] == selected_time]
+if not matched.empty:
+    val = int(matched['predicted_trip_count'].values[0])
+    st.metric("📈 Predicted Trip Count", value=val, delta=str(selected_time))
 else:
-    st.warning("No prediction found for selected hour.")
+    st.warning("No prediction found for this hour yet.")
 
 # -----------------------------
-# Show full prediction timeline
+# Show prediction timeline
 # -----------------------------
 st.markdown("### 📊 Prediction Timeline")
 chart = alt.Chart(pred_df).mark_line(point=True).encode(
@@ -64,13 +60,12 @@ chart = alt.Chart(pred_df).mark_line(point=True).encode(
     y='predicted_trip_count:Q',
     tooltip=['target_hour:T', 'predicted_trip_count']
 ).properties(height=400)
-
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# Show full prediction table
+# Show data table
 # -----------------------------
-st.markdown("### 🧾 Prediction Table (Recent)")
+st.markdown("### 🧾 Prediction Table (Latest)")
 st.dataframe(
     pred_df.sort_values("target_hour", ascending=False)[['target_hour', 'predicted_trip_count']],
     use_container_width=True
@@ -80,4 +75,4 @@ st.dataframe(
 # Footer
 # -----------------------------
 st.markdown("---")
-st.caption("Predictions powered by Hopsworks + LightGBM | Streamlit deployed")
+st.caption("Predictions powered by Hopsworks + LightGBM | Streamlit dashboard by Glen")
