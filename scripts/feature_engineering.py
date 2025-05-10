@@ -25,21 +25,7 @@ TARGET_COLS = [
     "member_casual"
 ]
 
-DTYPES = {
-    "ride_id": str,
-    "rideable_type": str,
-    "started_at": str,
-    "ended_at": str,
-    "start_station_name": str,
-    "start_station_id": str,
-    "end_station_name": str,
-    "end_station_id": str,
-    "start_lat": float,
-    "start_lng": float,
-    "end_lat": float,
-    "end_lng": float,
-    "member_casual": str
-}
+
 
 # ======================= DOWNLOAD & EXTRACTION =======================
 
