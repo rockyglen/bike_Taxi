@@ -1,50 +1,71 @@
+import os
 import pandas as pd
 import hopsworks
-import mlflow
 import lightgbm as lgb
-import os
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from datetime import timedelta
 
+# -----------------------------
+# 1. Setup
+# -----------------------------
 load_dotenv()
 
-# Hopsworks login
-project = hopsworks.login(api_key_value=os.getenv("HOPSWORKS_API_KEY"), project=os.getenv("HOPSWORKS_PROJECT"))
-fs = project.get_feature_store()
-fg = fs.get_feature_group(name="citi_bike_hourly_features", version=1)
+project = hopsworks.login(
+    api_key_value=os.getenv("HOPSWORKS_API_KEY"),
+    project=os.getenv("HOPSWORKS_PROJECT")
+)
 
-# Load and aggregate
+fs = project.get_feature_store()
+mr = project.get_model_registry()
+
+# -----------------------------
+# 2. Read recent data (hourly trip counts)
+# -----------------------------
+fg = fs.get_feature_group(name="citi_bike_trips", version=1)
 df = fg.read()
-df['start_hour'] = pd.to_datetime(df['start_hour'])
+df['start_hour'] = pd.to_datetime(df['started_at']).dt.floor('H')
+
 hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
 hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
 
-# Lag features
+# -----------------------------
+# 3. Create 28 lag features from most recent data
+# -----------------------------
 for lag in range(1, 29):
     hourly_df[f'lag_{lag}'] = hourly_df['trip_count'].shift(lag)
-hourly_df = hourly_df.dropna().reset_index(drop=True)
 
-# Latest row
-latest = hourly_df.tail(1)
+latest = hourly_df.dropna().iloc[-1:]  # last row with full lag window
 X_latest = latest[[f'lag_{i}' for i in range(1, 29)]]
+next_hour = latest['start_hour'].values[0] + timedelta(hours=1)
 
-# Load best model
-mlflow.set_tracking_uri(f"https://{os.getenv('DAGSHUB_USERNAME')}:{os.getenv('DAGSHUB_TOKEN')}@dagshub.com/{os.getenv('DAGSHUB_USERNAME')}/{os.getenv('DAGSHUB_REPO_NAME')}.mlflow")
-model = mlflow.lightgbm.load_model("models:/LightGBM_28_Lags/Production")
+# -----------------------------
+# 4. Load latest model
+# -----------------------------
+model_obj = mr.get_model("citi_bike_lgbm_full", version=2)  # or use .get_latest_version()
+model_dir = model_obj.download()
+model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
+
+# -----------------------------
+# 5. Predict
+# -----------------------------
 prediction = model.predict(X_latest)[0]
+print(f"📈 Predicted trips for {next_hour}: {prediction:.2f}")
 
-# Store prediction to Hopsworks
+# -----------------------------
+# 6. Log prediction to feature group
+# -----------------------------
 pred_df = pd.DataFrame({
-    "timestamp": [latest["start_hour"].values[0] + np.timedelta64(1, 'h')],
-    "predicted_trip_count": [prediction]
+    'prediction_time': [pd.Timestamp.utcnow()],
+    'target_hour': [next_hour],
+    'predicted_trip_count': [prediction]
 })
 
 pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
     version=1,
-    primary_key=["timestamp"],
-    description="Predicted trip counts from best model"
+    description="Predicted Citi Bike trips for next hour",
+    primary_key=["prediction_time"]
 )
 
-pred_fg.insert(pred_df, overwrite=False)
-print(f"🧠 Predicted next hour trips: {prediction:.2f}")
+pred_fg.insert(pred_df)
+print("✅ Prediction logged to Hopsworks.")
