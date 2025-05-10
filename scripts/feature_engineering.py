@@ -126,32 +126,42 @@ def write_top3_data(filepaths, top3, output=OUTPUT_FILE):
 def clean_and_engineer_features(file_path):
     print("🧼 Cleaning and engineering features...")
     df = pd.read_csv(file_path)
+    # 2. Standardize column names
     df.columns = df.columns.str.strip().str.lower()
 
+    # 3. Parse datetime columns
     df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')
     df['ended_at'] = pd.to_datetime(df['ended_at'], errors='coerce')
+
+    # 4. Drop rows with invalid/missing datetime
     df = df.dropna(subset=['started_at', 'ended_at'])
 
+    # 5. Drop rows with critical missing values
     critical_cols = ['ride_id', 'rideable_type', 'start_lat', 'start_lng', 'end_lat', 'end_lng', 'member_casual']
     df = df.dropna(subset=critical_cols)
 
+    # 6. Fill optional missing values
     df['start_station_name'] = df['start_station_name'].fillna('Unknown')
     df['end_station_name'] = df['end_station_name'].fillna('Unknown')
     df['start_station_id'] = df['start_station_id'].fillna('-1')
     df['end_station_id'] = df['end_station_id'].fillna('-1')
 
+    # 7. Convert data types
     df['ride_id'] = df['ride_id'].astype(str)
     df['rideable_type'] = df['rideable_type'].astype('category')
     df['member_casual'] = df['member_casual'].astype('category')
 
+    # 8. Create ride duration in minutes
     df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
-    df = df[df['ride_duration_mins'] > 0]
+    df = df[df['ride_duration_mins'] > 0]  # Remove 0 or negative durations
 
+    # 9. Optional time-based features
     df['day_of_week'] = df['started_at'].dt.day_name()
     df['hour_of_day'] = df['started_at'].dt.hour
     df['month'] = df['started_at'].dt.month
 
-    print(f"✅ Final cleaned shape: {df.shape}")
+    # 10. Final check
+    print(f"✅ Cleaned dataset: {df.shape[0]:,} rows × {df.shape[1]} columns")
     return df
 
 # ======================= HOPSWORKS =======================
