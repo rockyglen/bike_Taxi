@@ -1,3 +1,110 @@
-/env
-*.csv
-*.env
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# profiling
+.prof
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+
+# Mac crap
+.DS_Store
+
+# System files
+Thumbs.db
+
+# Jupyter runtime
+.jupyter/
+
+# Logs
+*.log
+
+# MLflow/artifacts
+mlruns/
+mlartifacts/
+
+# Local data, models, outputs
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.pt
+*.onnx
+*.model
+*.sav
+*.npz
+*.npy
+data/
+output/
+logs/
+
+# AWS credentials
+*.pem
+*.key
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# IPython history
+.ipython/
+
+# Misc
+*.bak
+*.swp
