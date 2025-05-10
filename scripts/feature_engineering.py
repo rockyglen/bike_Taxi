@@ -2,8 +2,16 @@ import pandas as pd
 import hopsworks
 import os
 from datetime import datetime
+from dotenv import load_dotenv
 
+# ----------------------
+# Load env (if running locally)
+# ----------------------
+load_dotenv()
+
+# ----------------------
 # Load raw data
+# ----------------------
 df = pd.read_csv("top3_stations_output.csv")
 
 # ----------------------
@@ -25,7 +33,7 @@ df['day_of_week'] = df['started_at'].dt.day_name()
 df['month'] = df['started_at'].dt.month
 
 # ----------------------
-# Replace problematic NaNs with None for nullable fields
+# Replace NaNs with None for nullable string columns
 # ----------------------
 nullable_str_cols = ['start_station_name', 'end_station_name', 'start_station_id', 'end_station_id']
 for col in nullable_str_cols:
@@ -33,7 +41,12 @@ for col in nullable_str_cols:
         df[col] = df[col].where(pd.notnull(df[col]), None)
 
 # ----------------------
-# Hopsworks: Login and insert
+# Confirm shape before upload
+# ----------------------
+print(f"📦 Final DataFrame: {df.shape[0]} rows × {df.shape[1]} columns")
+
+# ----------------------
+# Hopsworks login
 # ----------------------
 project = hopsworks.login(
     api_key_value=os.getenv("HOPSWORKS_API_KEY"),
@@ -41,14 +54,18 @@ project = hopsworks.login(
 )
 fs = project.get_feature_store()
 
-# Create or reuse Feature Group
+# ----------------------
+# Create or get feature group
+# ----------------------
 fg = fs.get_or_create_feature_group(
     name="citi_bike_hourly_features",
     version=1,
     primary_key=["ride_id"],
-    description="Cleaned Citi Bike trip data with hourly aggregation",
+    description="Cleaned Citi Bike trip data with hourly aggregation"
 )
 
-# Insert data
-fg.insert(df, overwrite=True)
-print(f"✅ Stored {len(df):,} rows in Hopsworks feature group.")
+# ----------------------
+# Insert data with ingestion confirmation
+# ----------------------
+fg.insert(df, overwrite=True, await_ingestion=True)
+print(f"✅ Successfully inserted {len(df):,} rows into Hopsworks feature group.")
