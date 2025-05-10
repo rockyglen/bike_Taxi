@@ -108,3 +108,5 @@ dist/
 # Misc
 *.bak
 *.swp
+
+*.csv
