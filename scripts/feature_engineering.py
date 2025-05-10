@@ -141,11 +141,11 @@ def clean_and_engineer_features(file_path):
     critical_cols = ['ride_id', 'rideable_type', 'start_lat', 'start_lng', 'end_lat', 'end_lng', 'member_casual']
     df = df.dropna(subset=critical_cols)
 
-    # 5. Fill optional missing values
+    # 5. Fill optional missing values and cast to correct types
     df['start_station_name'] = df['start_station_name'].fillna('Unknown')
     df['end_station_name'] = df['end_station_name'].fillna('Unknown')
-    df['start_station_id'] = pd.to_numeric(df['start_station_id'], errors='coerce')
-    df['end_station_id'] = pd.to_numeric(df['end_station_id'], errors='coerce')
+    df['start_station_id'] = df['start_station_id'].fillna('-1').astype(str)
+    df['end_station_id'] = df['end_station_id'].fillna('-1').astype(str)
 
     # 6. Convert string columns
     string_cols = ['ride_id', 'rideable_type', 'start_station_name', 'end_station_name', 'member_casual']
@@ -159,13 +159,10 @@ def clean_and_engineer_features(file_path):
     df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
     df = df[df['ride_duration_mins'] > 0]
 
-    # 8. Time features
+    # 8. Time features (cast explicitly to int)
     df['day_of_week'] = df['started_at'].dt.day_name()
     df['hour_of_day'] = df['started_at'].dt.hour.astype(int)
     df['month'] = df['started_at'].dt.month.astype(int)
-
-    # 9. Final dtype normalization
-    df = df.convert_dtypes()
 
     print(f"✅ Cleaned dataset: {df.shape[0]:,} rows × {df.shape[1]} columns")
     return df
