@@ -1,64 +1,127 @@
 import os
-import io
-import zipfile
 import requests
+import zipfile
 import pandas as pd
-import numpy as np
+import shutil
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+import pytz
+from io import BytesIO
 from collections import Counter
 from dotenv import load_dotenv
 import hopsworks
 from hsfs.feature_group import FeatureGroup
 
-CHUNK_SIZE = 1_000_000
-URL = 'https://s3.amazonaws.com/tripdata/2023-citibike-tripdata.zip'
-OUTPUT_FILE = 'top3_stations_output.csv'
+# ======================= CONFIG =======================
+TEMP_FOLDER = "tripdata_temp"
+OUTPUT_FILE = "top3_stations_output.csv"
+CHUNK_SIZE = 500_000
 
-def download_and_extract_top3():
-    print("⬇️ Downloading outer ZIP...")
-    response = requests.get(URL)
-    response.raise_for_status()
-    outer_zip = zipfile.ZipFile(io.BytesIO(response.content))
+TARGET_COLS = [
+    "ride_id", "rideable_type", "started_at", "ended_at",
+    "start_station_name", "start_station_id",
+    "end_station_name", "end_station_id",
+    "start_lat", "start_lng", "end_lat", "end_lng",
+    "member_casual"
+]
 
-    inner_zip_names = [f for f in outer_zip.namelist() if f.endswith('.zip')]
-    print(f"📦 Found {len(inner_zip_names)} monthly zip files.")
+DTYPES = {
+    "ride_id": str,
+    "rideable_type": str,
+    "started_at": str,
+    "ended_at": str,
+    "start_station_name": str,
+    "start_station_id": str,
+    "end_station_name": str,
+    "end_station_id": str,
+    "start_lat": float,
+    "start_lng": float,
+    "end_lat": float,
+    "end_lng": float,
+    "member_casual": str
+}
 
-    # First pass — count stations
-    station_counter = Counter()
-    for inner_name in inner_zip_names:
-        with outer_zip.open(inner_name) as inner_file:
-            with zipfile.ZipFile(io.BytesIO(inner_file.read())) as inner_zip:
-                csv_names = [f for f in inner_zip.namelist() if f.endswith('.csv')]
-                if not csv_names:
-                    continue
-                with inner_zip.open(csv_names[0]) as csv_file:
-                    for chunk in pd.read_csv(csv_file, chunksize=CHUNK_SIZE, low_memory=False,
-                                             dtype={'start_station_id': str, 'end_station_id': str}):
-                        if 'start_station_name' in chunk.columns:
-                            station_counter.update(chunk['start_station_name'].dropna())
+# ======================= DOWNLOAD & EXTRACTION =======================
 
-    top3_stations = [s for s, _ in station_counter.most_common(3)]
-    print(f"🏆 Top 3 Stations: {top3_stations}")
+def get_last_12_months_est():
+    eastern = pytz.timezone("US/Eastern")
+    now_est = datetime.now(eastern)
+    return [(now_est - relativedelta(months=i + 1)).strftime('%Y%m') for i in range(12)]
 
-    # Second pass — filter rows
-    is_first_chunk = True
-    for inner_name in inner_zip_names:
-        with outer_zip.open(inner_name) as inner_file:
-            with zipfile.ZipFile(io.BytesIO(inner_file.read())) as inner_zip:
-                csv_names = [f for f in inner_zip.namelist() if f.endswith('.csv')]
-                if not csv_names:
-                    continue
-                with inner_zip.open(csv_names[0]) as csv_file:
-                    for chunk in pd.read_csv(csv_file, chunksize=CHUNK_SIZE, low_memory=False,
-                                             dtype={'start_station_id': str, 'end_station_id': str}):
-                        if 'start_station_name' not in chunk.columns:
-                            continue
-                        filtered = chunk[chunk['start_station_name'].isin(top3_stations)]
-                        if not filtered.empty:
-                            filtered.to_csv(OUTPUT_FILE, mode='w' if is_first_chunk else 'a',
-                                            index=False, header=is_first_chunk)
-                            is_first_chunk = False
-    print(f"✅ Filtered data saved to {OUTPUT_FILE}")
-    return OUTPUT_FILE
+def download_zip_to_memory(ym):
+    base_url = "https://s3.amazonaws.com/tripdata/"
+    filenames = [
+        f"{ym}-citibike-tripdata.zip",
+        f"{ym}-citibike-tripdata.csv.zip"
+    ]
+    for fname in filenames:
+        url = base_url + fname
+        try:
+            print(f"🌐 Trying: {url}")
+            r = requests.get(url, timeout=20)
+            if r.status_code == 200:
+                print(f"✅ Downloaded: {fname}")
+                return BytesIO(r.content)
+            else:
+                print(f"❌ Not found: {url}")
+        except Exception as e:
+            print(f"⚠️ Error downloading {url}: {e}")
+    return None
+
+def extract_all_csvs(zip_bytes_io, extract_to):
+    try:
+        with zipfile.ZipFile(zip_bytes_io) as zf:
+            for member in zf.namelist():
+                if member.endswith('.zip'):
+                    nested_zip_data = zf.read(member)
+                    with zipfile.ZipFile(BytesIO(nested_zip_data)) as nested_zf:
+                        for nested_member in nested_zf.namelist():
+                            if nested_member.endswith('.csv'):
+                                print(f"📦 Extracting nested CSV: {nested_member}")
+                                nested_zf.extract(nested_member, extract_to)
+                elif member.endswith('.csv'):
+                    print(f"📁 Extracting CSV: {member}")
+                    zf.extract(member, extract_to)
+    except Exception as e:
+        print(f"⚠️ Error extracting zip: {e}")
+
+def flatten_csvs_folder(root_folder):
+    flat_files = []
+    for root, _, files in os.walk(root_folder):
+        for fname in files:
+            if fname.endswith(".csv"):
+                full_path = os.path.join(root, fname)
+                flat_files.append(full_path)
+    return flat_files
+
+# ======================= TOP 3 STATION FILTERING =======================
+
+def get_top3_station_names(filepaths):
+    freq = Counter()
+    for path in filepaths:
+        try:
+            for chunk in pd.read_csv(path, usecols=["start_station_name"], dtype={"start_station_name": str}, chunksize=CHUNK_SIZE):
+                chunk = chunk.dropna(subset=["start_station_name"])
+                freq.update(chunk["start_station_name"])
+        except Exception as e:
+            print(f"⚠️ Skipping {path}: {e}")
+    top3 = [name for name, _ in freq.most_common(3)]
+    return top3
+
+def write_top3_data(filepaths, top3, output=OUTPUT_FILE):
+    first_write = True
+    for path in filepaths:
+        try:
+            for chunk in pd.read_csv(path, usecols=TARGET_COLS, dtype=DTYPES, chunksize=CHUNK_SIZE, low_memory=False):
+                chunk = chunk.dropna(subset=["start_station_name"])
+                filtered = chunk[chunk["start_station_name"].isin(top3)]
+                if not filtered.empty:
+                    filtered.to_csv(output, index=False, mode='a' if not first_write else 'w', header=first_write)
+                    first_write = False
+        except Exception as e:
+            print(f"⚠️ Skipping {path}: {e}")
+
+# ======================= CLEANING & FEATURES =======================
 
 def clean_and_engineer_features(file_path):
     print("🧼 Cleaning and engineering features...")
@@ -91,6 +154,8 @@ def clean_and_engineer_features(file_path):
     print(f"✅ Final cleaned shape: {df.shape}")
     return df
 
+# ======================= HOPSWORKS =======================
+
 def connect_to_hopsworks():
     print("🔐 Connecting to Hopsworks...")
     load_dotenv()
@@ -105,16 +170,46 @@ def push_to_feature_store(df, fs):
     fg = fs.get_or_create_feature_group(
         name="citi_bike_trips",
         version=1,
-        description="Citi Bike data from top 3 stations in 2023",
+        description="Citi Bike data from top 3 stations in last 12 months",
         primary_key=["ride_id"],
         event_time="started_at"
     )
     fg.insert(df, write_options={"wait_for_job": True})
     print("✅ Feature group created/updated successfully.")
 
+# ======================= MAIN PIPELINE =======================
+
 def main():
-    csv_path = download_and_extract_top3()
-    df = clean_and_engineer_features(csv_path)
+    if os.path.exists(TEMP_FOLDER):
+        shutil.rmtree(TEMP_FOLDER)
+    os.makedirs(TEMP_FOLDER, exist_ok=True)
+
+    months = get_last_12_months_est()
+    print("🚀 Starting download + extraction...")
+
+    for ym in months:
+        zip_mem = download_zip_to_memory(ym)
+        if zip_mem:
+            extract_all_csvs(zip_mem, TEMP_FOLDER)
+
+    all_csvs = flatten_csvs_folder(TEMP_FOLDER)
+    if not all_csvs:
+        print("❌ No CSV files found.")
+        return
+
+    print("\n🔍 Counting top 3 stations...")
+    top3 = get_top3_station_names(all_csvs)
+    print(f"🏆 Top 3 Stations: {top3}")
+
+    print("\n📤 Writing filtered data...")
+    write_top3_data(all_csvs, top3)
+    print(f"✅ Output written to `{OUTPUT_FILE}`")
+
+    print("\n🧹 Cleaning up temp files...")
+    shutil.rmtree(TEMP_FOLDER)
+    print("✅ Temp folder deleted.")
+
+    df = clean_and_engineer_features(OUTPUT_FILE)
     fs = connect_to_hopsworks()
     push_to_feature_store(df, fs)
 
