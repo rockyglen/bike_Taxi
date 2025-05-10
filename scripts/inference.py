@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from datetime import timedelta
 
 # -----------------------------
-# 1. Load .env + connect
+# 1. Load credentials & login
 # -----------------------------
 load_dotenv()
 project = hopsworks.login(
@@ -17,7 +17,7 @@ fs = project.get_feature_store()
 mr = project.get_model_registry()
 
 # -----------------------------
-# 2. Read hourly data
+# 2. Load hourly data from trips
 # -----------------------------
 fg = fs.get_feature_group("citi_bike_trips", version=1)
 df = fg.read()
@@ -27,7 +27,7 @@ hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
 hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
 
 # -----------------------------
-# 3. Generate lag features
+# 3. Create 28 lag features
 # -----------------------------
 for lag in range(1, 29):
     hourly_df[f'lag_{lag}'] = hourly_df['trip_count'].shift(lag)
@@ -37,20 +37,21 @@ X_latest = latest[[f'lag_{i}' for i in range(1, 29)]]
 next_hour = pd.to_datetime(latest['start_hour'].values[0]) + timedelta(hours=1)
 
 # -----------------------------
-# 4. Load model from registry
+# 4. Load latest model version
 # -----------------------------
-model_obj = mr.get_latest_version("citi_bike_lgbm_full")
-model_dir = model_obj.download()
+models = mr.get_models("citi_bike_lgbm_full")
+latest_model = sorted(models, key=lambda m: m.version)[-1]
+model_dir = latest_model.download()
 model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
 
 # -----------------------------
-# 5. Predict
+# 5. Make prediction
 # -----------------------------
 prediction = model.predict(X_latest)[0]
 print(f"📈 Predicted trip count for {next_hour}: {prediction:.2f}")
 
 # -----------------------------
-# 6. Log prediction to Hopsworks
+# 6. Log prediction to feature store
 # -----------------------------
 pred_df = pd.DataFrame({
     'prediction_time': [pd.Timestamp.utcnow()],
