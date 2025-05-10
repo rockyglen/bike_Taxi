@@ -5,7 +5,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 # ----------------------
-# Load env (if running locally)
+# Load .env (optional for local)
 # ----------------------
 load_dotenv()
 
@@ -22,7 +22,7 @@ df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')
 df['ended_at'] = pd.to_datetime(df['ended_at'], errors='coerce')
 df = df.dropna(subset=['started_at', 'ended_at'])
 
-# Calculate ride duration in minutes
+# Ride duration in minutes
 df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
 df = df[df['ride_duration_mins'] > 0]
 
@@ -33,7 +33,7 @@ df['day_of_week'] = df['started_at'].dt.day_name()
 df['month'] = df['started_at'].dt.month
 
 # ----------------------
-# Replace NaNs with None for nullable string columns
+# Replace NaNs with None for nullable string fields
 # ----------------------
 nullable_str_cols = ['start_station_name', 'end_station_name', 'start_station_id', 'end_station_id']
 for col in nullable_str_cols:
@@ -46,7 +46,7 @@ for col in nullable_str_cols:
 print(f"📦 Final DataFrame: {df.shape[0]} rows × {df.shape[1]} columns")
 
 # ----------------------
-# Hopsworks login
+# Login to Hopsworks
 # ----------------------
 project = hopsworks.login(
     api_key_value=os.getenv("HOPSWORKS_API_KEY"),
@@ -55,7 +55,7 @@ project = hopsworks.login(
 fs = project.get_feature_store()
 
 # ----------------------
-# Create or get feature group
+# Create or reuse Feature Group
 # ----------------------
 fg = fs.get_or_create_feature_group(
     name="citi_bike_hourly_features",
@@ -65,7 +65,14 @@ fg = fs.get_or_create_feature_group(
 )
 
 # ----------------------
-# Insert data with ingestion confirmation
+# Insert data and trigger materialization manually
 # ----------------------
-fg.insert(df, overwrite=True, await_ingestion=True)
-print(f"✅ Successfully inserted {len(df):,} rows into Hopsworks feature group.")
+fg.insert(df, overwrite=True)
+print(f"✅ Inserted {len(df):,} rows into Hopsworks (online store).")
+
+# ----------------------
+# Materialize to offline store
+# ----------------------
+print("⏳ Triggering offline materialization job...")
+fg.materialize()
+print("✅ Offline materialization job launched. Check UI for data in ~1–2 mins.")
