@@ -5,7 +5,6 @@ import hopsworks
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import pytz
-from hsfs.filter import Filter
 
 # -----------------------------
 # 1. Load credentials & login
@@ -101,7 +100,7 @@ pred_fg = fs.get_or_create_feature_group(
 
 # 💣 Delete existing records up to current time (in EST)
 pred_fg.delete_records(
-    Filter(pred_fg.feature("prediction_time") <= now_est)
+    pred_fg.feature("prediction_time") <= now_est
 )
 
 # ✅ Insert new predictions
