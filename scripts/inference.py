@@ -34,6 +34,7 @@ eastern = pytz.timezone("US/Eastern")
 now_est = datetime.now(eastern).replace(minute=0, second=0, microsecond=0)
 now_utc = now_est.astimezone(pytz.UTC)
 
+# Get the last 28 hours of actual data (before "now")
 cutoff_time = now_utc - timedelta(hours=1)
 lag_rows = hourly_df[hourly_df['start_hour'] <= cutoff_time].tail(28)
 
@@ -66,7 +67,6 @@ for _ in range(24):
         'target_hour': current_hour,
         'predicted_trip_count': prediction
     })
-
     lag_values.append(prediction)
 
 print(f"📈 Predicted trip count for next 24 hours starting from {predictions[0]['target_hour']}:")
@@ -91,11 +91,11 @@ for station in top_stations:
 pred_df = pd.DataFrame(extended_predictions)
 
 # -----------------------------
-# 7. Log predictions to feature store
+# 7. Log predictions to feature store (using new version)
 # -----------------------------
 pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
-    version=1,
+    version=2,  # New version to include "start_station_name"
     primary_key=["prediction_time", "start_station_name"],
     description="Predicted Citi Bike trips for next 24 hours by top 3 stations"
 )
