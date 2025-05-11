@@ -30,3 +30,4 @@ uvicorn==0.34.2
 Werkzeug==3.1.3
 altair
 streamlit
+hsfs>=3.0.0
