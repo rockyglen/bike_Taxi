@@ -97,7 +97,7 @@ pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
     version=2,  # New version to include "start_station_name"
     primary_key=["prediction_time", "start_station_name"],
-    description="Predicted Citi Bike trips for next 24 hours by top 3 stations"
+    description="Predicted Citi Bike trips for next 168 hours by top 3 stations"
 )
 
 pred_fg.insert(pred_df)
