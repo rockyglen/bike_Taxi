@@ -87,24 +87,18 @@ else:
     st.warning("No prediction found for this hour.")
 
 # -----------------------------
-# Prediction Timeline
-# -----------------------------
-st.markdown(f"### 📊 Prediction Timeline for **{selected_station}**")
-chart = alt.Chart(filtered_df).mark_line(point=True).encode(
-    x='target_hour:T',
-    y='predicted_trip_count:Q',
-    tooltip=['target_hour:T', 'predicted_trip_count']
-).properties(height=400)
-st.altair_chart(chart, use_container_width=True)
-
-# -----------------------------
-# Prediction Table (Rounded & Chronologically Sorted)
+# Prediction Table (Rounded & Timezone-Aware)
 # -----------------------------
 st.markdown("### 🧾 Prediction Table (Next 24 Hours by Time)")
 
 rounded_df = filtered_df.copy()
 rounded_df['predicted_trip_count'] = rounded_df['predicted_trip_count'].round(0).astype(int)
 
+# Convert to EST
+eastern = pytz.timezone("America/New_York")
+rounded_df['target_hour'] = pd.to_datetime(rounded_df['target_hour']).dt.tz_convert(eastern)
+
+# Sort by time
 st.dataframe(
     rounded_df.sort_values("target_hour", ascending=True)[
         ['target_hour', 'predicted_trip_count']
