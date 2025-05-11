@@ -98,19 +98,20 @@ chart = alt.Chart(filtered_df).mark_line(point=True).encode(
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# Prediction Table (Sorted & Rounded)
+# Prediction Table (Rounded & Chronologically Sorted)
 # -----------------------------
-st.markdown("### 🧾 Prediction Table (Sorted by Highest Predicted Count)")
+st.markdown("### 🧾 Prediction Table (Next 24 Hours by Time)")
 
 rounded_df = filtered_df.copy()
 rounded_df['predicted_trip_count'] = rounded_df['predicted_trip_count'].round(0).astype(int)
 
 st.dataframe(
-    rounded_df.sort_values("predicted_trip_count", ascending=False)[
+    rounded_df.sort_values("target_hour", ascending=True)[
         ['target_hour', 'predicted_trip_count']
     ],
     use_container_width=True
 )
+
 
 
 
