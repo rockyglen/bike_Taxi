@@ -57,7 +57,7 @@ model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
 # -----------------------------
 predictions = []
 
-for _ in range(24):
+for _ in range(168):
     X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
     prediction = model.predict(X_input)[0]
     current_hour += timedelta(hours=1)
