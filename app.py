@@ -87,6 +87,17 @@ else:
     st.warning("No prediction found for this hour.")
 
 # -----------------------------
+# Prediction Timeline
+# -----------------------------
+st.markdown(f"### 📊 Prediction Timeline for **{selected_station}**")
+chart = alt.Chart(filtered_df).mark_line(point=True).encode(
+    x='target_hour:T',
+    y='predicted_trip_count:Q',
+    tooltip=['target_hour:T', 'predicted_trip_count']
+).properties(height=400)
+st.altair_chart(chart, use_container_width=True)
+
+# -----------------------------
 # Prediction Table (Rounded & Timezone-Aware)
 # -----------------------------
 st.markdown("### 🧾 Prediction Table (Next 24 Hours by Time)")
