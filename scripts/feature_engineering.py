@@ -25,8 +25,6 @@ TARGET_COLS = [
     "member_casual"
 ]
 
-
-
 # ======================= DOWNLOAD & EXTRACTION =======================
 
 def get_last_12_months_est():
@@ -103,6 +101,7 @@ def write_top3_data(filepaths, top3, output=OUTPUT_FILE):
                 filtered = chunk[chunk["start_station_name"].isin(top3)]
                 if not filtered.empty:
                     filtered.to_csv(output, index=False, mode='a' if not first_write else 'w', header=first_write)
+                    print(f"✅ Written {len(filtered)} rows from {path}")
                     first_write = False
         except Exception as e:
             print(f"⚠️ Skipping {path}: {e}")
@@ -133,19 +132,17 @@ def clean_and_engineer_features(file_path):
     df['start_station_id'] = df['start_station_id'].fillna('-1').astype(str)
     df['end_station_id'] = df['end_station_id'].fillna('-1').astype(str)
 
-
-
     df['rideable_type'] = df['rideable_type'].astype('category')
     df['member_casual'] = df['member_casual'].astype('category')
 
-    # 7. Ride duration
+    # 6. Ride duration
     df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
     df = df[df['ride_duration_mins'] > 0]
 
-    # 8. Time features (cast explicitly to int)
+    # 7. Time features (cast explicitly to int32)
     df['day_of_week'] = df['started_at'].dt.day_name()
-    df['hour_of_day'] = df['started_at'].dt.hour.astype(int)
-    df['month'] = df['started_at'].dt.month.astype(int)
+    df['hour_of_day'] = df['started_at'].dt.hour.astype('int32')
+    df['month'] = df['started_at'].dt.month.astype('int32')
 
     print(f"✅ Cleaned dataset: {df.shape[0]:,} rows × {df.shape[1]} columns")
     return df
@@ -199,6 +196,11 @@ def main():
 
     print("\n📤 Writing filtered data...")
     write_top3_data(all_csvs, top3)
+
+    if not os.path.exists(OUTPUT_FILE) or os.path.getsize(OUTPUT_FILE) == 0:
+        print(f"❌ ERROR: No data written to {OUTPUT_FILE}. Check filtering logic or raw data.")
+        return
+
     print(f"✅ Output written to `{OUTPUT_FILE}`")
 
     print("\n🧹 Cleaning up temp files...")
