@@ -22,7 +22,8 @@ def connect_to_hopsworks():
     load_dotenv()
     project = hopsworks.login(
         api_key_value=os.getenv("HOPSWORKS_API_KEY"),
-        project=os.getenv("HOPSWORKS_PROJECT")
+        project=os.getenv("HOPSWORKS_PROJECT"),
+        interactive=False
     )
     return project.get_feature_store()
 
