@@ -4,6 +4,7 @@ import streamlit as st
 import hopsworks
 import altair as alt
 import numpy as np
+import pytz
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from scipy.stats import ks_2samp
@@ -49,14 +50,18 @@ station = st.sidebar.selectbox("Select Station", sorted(pred_df['start_station_n
 time_range = st.sidebar.slider("Forecast Horizon (Hours)", 1, 168, (1, 72))
 
 # -----------------------------
-# Filter Data
+# Filter Data with timezone-aware datetime
 # -----------------------------
 station_df = pred_df[pred_df['start_station_name'] == station].copy()
 station_df = station_df.sort_values("target_hour")
-now = datetime.now()
+
+eastern = pytz.timezone("US/Eastern")
+now = datetime.now(eastern)
+end_time = now + timedelta(hours=time_range[1])
+
 station_df = station_df[
     (station_df['target_hour'] >= now) &
-    (station_df['target_hour'] <= now + timedelta(hours=time_range[1]))
+    (station_df['target_hour'] <= end_time)
 ]
 
 # -----------------------------
@@ -79,7 +84,6 @@ st.altair_chart(forecast_chart, use_container_width=True)
 # -----------------------------
 with st.expander("📊 Feature Drift (Lag Distributions)"):
     # Simulated train vs recent (use real stored training stats in prod)
-    # For demo, create two fake dists
     fake_train_dist = np.random.normal(100, 10, 1000)
     recent_pred_dist = station_df['predicted_trip_count'].values
     if len(recent_pred_dist) > 10:
