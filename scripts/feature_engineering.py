@@ -151,7 +151,17 @@ def connect_to_hopsworks():
 
 def push_to_feature_store(df, fs):
     print("🚀 Pushing to Hopsworks Feature Store...")
-    fg = fs.get_or_create_feature_group(
+
+    try:
+        # Delete the entire feature group if it exists
+        fg = fs.get_feature_group("citi_bike_trips", version=1)
+        fg.delete()
+        print("🗑️ Existing feature group deleted.")
+    except Exception as e:
+        print(f"ℹ️ Feature group does not exist or could not be deleted: {e}")
+
+    # Recreate feature group
+    fg = fs.create_feature_group(
         name="citi_bike_trips",
         version=1,
         description="Citi Bike data from top 3 stations in last 12 months",
@@ -159,15 +169,9 @@ def push_to_feature_store(df, fs):
         event_time="started_at"
     )
 
-    try:
-        print("🧨 Deleting existing records...")
-        fg.delete_records(f"started_at > '1900-01-01'")
-        print("✅ All existing records deleted.")
-    except Exception as e:
-        print(f"⚠️ Failed to delete existing records: {e}")
-
     fg.insert(df, write_options={"wait_for_job": True})
-    print("✅ Feature group created/updated successfully.")
+    print("✅ Feature group created and data inserted.")
+
 
 # ======================= MAIN =======================
 
