@@ -112,21 +112,14 @@ def clean_and_engineer_features(file_path):
     print("🧼 Cleaning and engineering features...")
     df = pd.read_csv(file_path)
 
-    # 1. Standardize column names
     df.columns = df.columns.str.strip().str.lower()
-
-    # 2. Parse datetime columns
     df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')
     df['ended_at'] = pd.to_datetime(df['ended_at'], errors='coerce')
-
-    # 3. Drop rows with invalid/missing datetime
     df = df.dropna(subset=['started_at', 'ended_at'])
 
-    # 4. Drop rows with critical missing values
     critical_cols = ['ride_id', 'rideable_type', 'start_lat', 'start_lng', 'end_lat', 'end_lng', 'member_casual']
     df = df.dropna(subset=critical_cols)
 
-    # 5. Fill optional missing values and cast to correct types
     df['start_station_name'] = df['start_station_name'].fillna('Unknown')
     df['end_station_name'] = df['end_station_name'].fillna('Unknown')
     df['start_station_id'] = df['start_station_id'].fillna('-1').astype(str)
@@ -135,11 +128,9 @@ def clean_and_engineer_features(file_path):
     df['rideable_type'] = df['rideable_type'].astype('category')
     df['member_casual'] = df['member_casual'].astype('category')
 
-    # 6. Ride duration
     df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
     df = df[df['ride_duration_mins'] > 0]
 
-    # 7. Time features (cast explicitly to int32)
     df['day_of_week'] = df['started_at'].dt.day_name()
     df['hour_of_day'] = df['started_at'].dt.hour.astype('int32')
     df['month'] = df['started_at'].dt.month.astype('int32')
@@ -167,6 +158,14 @@ def push_to_feature_store(df, fs):
         primary_key=["ride_id"],
         event_time="started_at"
     )
+
+    try:
+        print("🧨 Deleting existing records...")
+        fg.delete_records(f"started_at > '1900-01-01'")
+        print("✅ All existing records deleted.")
+    except Exception as e:
+        print(f"⚠️ Failed to delete existing records: {e}")
+
     fg.insert(df, write_options={"wait_for_job": True})
     print("✅ Feature group created/updated successfully.")
 
