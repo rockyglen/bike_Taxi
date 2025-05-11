@@ -24,10 +24,10 @@ project = hopsworks.login(
 fs = project.get_feature_store()
 
 # -----------------------------
-# Load Predictions
+# Load Predictions (batch mode for Hopsworks 4.x)
 # -----------------------------
 pred_fg = fs.get_feature_group("citi_bike_predictions", version=2)
-pred_df = pred_fg.read()
+pred_df = pred_fg.read_batch()  # 👈 FIX: use read_batch() instead of read()
 pred_df['prediction_time'] = pd.to_datetime(pred_df['prediction_time'])
 pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
 
@@ -77,7 +77,7 @@ selected_label = st.selectbox("🕒 Select a Target Hour (EST)", list(option_map
 selected_time = option_map[selected_label]
 
 # -----------------------------
-# Display Prediction Metric (Pretty Timestamp)
+# Display Prediction Metric (Clean Timestamp)
 # -----------------------------
 matched = filtered_df[filtered_df['target_hour'] == selected_time]
 if not matched.empty:
@@ -99,14 +99,14 @@ chart = alt.Chart(filtered_df).mark_line(point=True).encode(
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# Prediction Table (Rounded + EST + Cleaned Timestamps)
+# Prediction Table (Rounded + Clean Hour Format)
 # -----------------------------
 st.markdown("### 🧾 Prediction Table (Next 24 Hours by Time)")
 
 rounded_df = filtered_df.copy()
 rounded_df['predicted_trip_count'] = rounded_df['predicted_trip_count'].round(0).astype(int)
 rounded_df['target_hour'] = pd.to_datetime(rounded_df['target_hour']).dt.tz_convert(eastern)
-rounded_df['target_hour'] = rounded_df['target_hour'].dt.strftime('%Y-%m-%d %H')  # No minutes/seconds
+rounded_df['target_hour'] = rounded_df['target_hour'].dt.strftime('%Y-%m-%d %H')  # Only show hour
 
 st.dataframe(
     rounded_df.sort_values("target_hour", ascending=True)[
