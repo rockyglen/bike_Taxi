@@ -33,8 +33,8 @@ for lag in range(1, 29):
     hourly_df[f'lag_{lag}'] = hourly_df['trip_count'].shift(lag)
 
 latest = hourly_df.dropna().iloc[-1:].copy()
-X_latest = latest[[f'lag_{i}' for i in range(1, 29)]]
-next_hour = pd.to_datetime(latest['start_hour'].values[0]) + timedelta(hours=1)
+lag_values = latest[[f'lag_{i}' for i in range(1, 29)]].values.flatten().tolist()
+current_hour = pd.to_datetime(latest['start_hour'].values[0])
 
 # -----------------------------
 # 4. Load latest model version
@@ -45,19 +45,31 @@ model_dir = latest_model.download()
 model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
 
 # -----------------------------
-# 5. Make prediction
+# 5. Make 24-hour predictions
 # -----------------------------
-prediction = model.predict(X_latest)[0]
-print(f"📈 Predicted trip count for {next_hour}: {prediction:.2f}")
+predictions = []
+
+for _ in range(24):
+    X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
+    prediction = model.predict(X_input)[0]
+    current_hour += timedelta(hours=1)
+    
+    predictions.append({
+        'prediction_time': pd.Timestamp.utcnow(),
+        'target_hour': current_hour,
+        'predicted_trip_count': prediction
+    })
+
+    lag_values.append(prediction)
+
+print(f"📈 Predicted trip count for next 24 hours starting from {predictions[0]['target_hour']}:")
+for p in predictions:
+    print(f"{p['target_hour']}: {p['predicted_trip_count']:.2f}")
 
 # -----------------------------
-# 6. Log prediction to feature store
+# 6. Log predictions to feature store
 # -----------------------------
-pred_df = pd.DataFrame({
-    'prediction_time': [pd.Timestamp.utcnow()],
-    'target_hour': [next_hour],
-    'predicted_trip_count': [prediction]
-})
+pred_df = pd.DataFrame(predictions)
 
 pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
@@ -67,4 +79,4 @@ pred_fg = fs.get_or_create_feature_group(
 )
 
 pred_fg.insert(pred_df)
-print("✅ Prediction logged to Hopsworks.")
+print("✅ 24-hour predictions logged to Hopsworks.")
