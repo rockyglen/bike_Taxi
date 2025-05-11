@@ -83,17 +83,21 @@ st.altair_chart(forecast_chart, use_container_width=True)
 # Model Drift / Distribution Check
 # -----------------------------
 with st.expander("📊 Feature Drift (Lag Distributions)"):
-    # Simulated train vs recent (use real stored training stats in prod)
     fake_train_dist = np.random.normal(100, 10, 1000)
     recent_pred_dist = station_df['predicted_trip_count'].values
+
     if len(recent_pred_dist) > 10:
         stat, pval = ks_2samp(fake_train_dist, recent_pred_dist)
         st.metric("KS Test p-value", f"{pval:.4f}", delta_color="inverse")
         st.write("Low p-value (< 0.05) indicates drift")
-        st.line_chart(pd.DataFrame({
-            'Train Distribution': pd.Series(fake_train_dist[:len(recent_pred_dist)]),
-            'Recent Predictions': recent_pred_dist
-        }))
+
+        # Create equal-length, properly indexed DataFrame
+        drift_df = pd.DataFrame({
+            'Train': fake_train_dist[:len(recent_pred_dist)],
+            'Prediction': recent_pred_dist
+        }).reset_index(drop=True)
+
+        st.line_chart(drift_df)
     else:
         st.info("Not enough recent data to compare distribution.")
 
