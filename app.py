@@ -98,15 +98,16 @@ chart = alt.Chart(filtered_df).mark_line(point=True).encode(
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# Prediction Table
+# Prediction Table (Sorted by Count)
 # -----------------------------
-st.markdown("### 🧾 Prediction Table")
+st.markdown("### 🧾 Prediction Table (Sorted by Highest Predicted Count)")
 st.dataframe(
-    filtered_df.sort_values("target_hour", ascending=False)[
+    filtered_df.sort_values("predicted_trip_count", ascending=False)[
         ['target_hour', 'predicted_trip_count']
     ],
     use_container_width=True
 )
+
 
 # -----------------------------
 # Footer
