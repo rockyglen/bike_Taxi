@@ -91,11 +91,12 @@ with st.expander("📊 Feature Drift (Lag Distributions)"):
         st.metric("KS Test p-value", f"{pval:.4f}", delta_color="inverse")
         st.write("Low p-value (< 0.05) indicates drift")
 
-        # Create equal-length, properly indexed DataFrame
+        # ✅ Ensure arrays are the same length
+        min_len = min(len(fake_train_dist), len(recent_pred_dist))
         drift_df = pd.DataFrame({
-            'Train': fake_train_dist[:len(recent_pred_dist)],
-            'Prediction': recent_pred_dist
-        }).reset_index(drop=True)
+            'Train': fake_train_dist[:min_len],
+            'Prediction': recent_pred_dist[:min_len]
+        })
 
         st.line_chart(drift_df)
     else:
