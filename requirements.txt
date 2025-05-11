@@ -8,6 +8,7 @@ google-auth==2.40.1
 graphene==3.4.3
 grpcio==1.71.0
 hopsworks==4.2.2
+hsfs==3.3.4       # ✅ Explicitly added with delete_records() support
 httpx==0.28.1
 jupyter==1.1.1
 lightgbm==4.6.0
@@ -30,4 +31,3 @@ uvicorn==0.34.2
 Werkzeug==3.1.3
 altair
 streamlit
-
