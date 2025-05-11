@@ -4,6 +4,7 @@ import hopsworks
 import lightgbm as lgb
 from dotenv import load_dotenv
 from datetime import timedelta
+import pytz  # Required for timezone conversion
 
 # -----------------------------
 # 1. Load credentials & login
@@ -36,6 +37,10 @@ latest = hourly_df.dropna().iloc[-1:].copy()
 lag_values = latest[[f'lag_{i}' for i in range(1, 29)]].values.flatten().tolist()
 current_hour = pd.to_datetime(latest['start_hour'].values[0])
 
+# Convert current_hour from naive/UTC to US/Eastern
+eastern = pytz.timezone("US/Eastern")
+current_hour = current_hour.tz_localize("UTC").astimezone(eastern)
+
 # -----------------------------
 # 4. Load latest model version
 # -----------------------------
@@ -53,10 +58,10 @@ for _ in range(24):
     X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
     prediction = model.predict(X_input)[0]
     current_hour += timedelta(hours=1)
-    
+
     predictions.append({
-        'prediction_time': pd.Timestamp.utcnow(),
-        'target_hour': current_hour,
+        'prediction_time': pd.Timestamp.utcnow(),  # still log in UTC
+        'target_hour': current_hour,               # now in EST
         'predicted_trip_count': prediction
     })
 
