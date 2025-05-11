@@ -3,8 +3,8 @@ import pandas as pd
 import hopsworks
 import lightgbm as lgb
 from dotenv import load_dotenv
-from datetime import timedelta
-import pytz  # Required for timezone conversion
+from datetime import datetime, timedelta
+import pytz
 
 # -----------------------------
 # 1. Load credentials & login
@@ -28,18 +28,21 @@ hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
 hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
 
 # -----------------------------
-# 3. Create 28 lag features
+# 3. Align to current time in EST
 # -----------------------------
-for lag in range(1, 29):
-    hourly_df[f'lag_{lag}'] = hourly_df['trip_count'].shift(lag)
-
-latest = hourly_df.dropna().iloc[-1:].copy()
-lag_values = latest[[f'lag_{i}' for i in range(1, 29)]].values.flatten().tolist()
-current_hour = pd.to_datetime(latest['start_hour'].values[0])
-
-# Convert current_hour from naive/UTC to US/Eastern
 eastern = pytz.timezone("US/Eastern")
-current_hour = current_hour.tz_localize("UTC").astimezone(eastern)
+now_est = datetime.now(eastern).replace(minute=0, second=0, microsecond=0)
+now_utc = now_est.astimezone(pytz.UTC)
+
+# Ensure we have the last 28 hours before "now"
+cutoff_time = now_utc - timedelta(hours=1)
+lag_rows = hourly_df[hourly_df['start_hour'] <= cutoff_time].tail(28)
+
+if lag_rows.shape[0] < 28:
+    raise ValueError("Not enough lag data to predict from current time.")
+
+lag_values = lag_rows['trip_count'].tolist()
+current_hour = now_est  # start predicting from the next hour in EST
 
 # -----------------------------
 # 4. Load latest model version
@@ -60,8 +63,8 @@ for _ in range(24):
     current_hour += timedelta(hours=1)
 
     predictions.append({
-        'prediction_time': pd.Timestamp.utcnow(),  # still log in UTC
-        'target_hour': current_hour,               # now in EST
+        'prediction_time': pd.Timestamp.utcnow(),
+        'target_hour': current_hour,
         'predicted_trip_count': prediction
     })
 
