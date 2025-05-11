@@ -77,12 +77,13 @@ selected_label = st.selectbox("🕒 Select a Target Hour (EST)", list(option_map
 selected_time = option_map[selected_label]
 
 # -----------------------------
-# Display Prediction Metric
+# Display Prediction Metric (Pretty Timestamp)
 # -----------------------------
 matched = filtered_df[filtered_df['target_hour'] == selected_time]
 if not matched.empty:
     val = int(matched['predicted_trip_count'].values[0])
-    st.metric("📈 Predicted Trip Count", value=val, delta=str(selected_time))
+    delta_display = selected_time.strftime("%I %p on %b %d")  # e.g., "12 AM on May 11"
+    st.metric("📈 Predicted Trip Count", value=val, delta=delta_display)
 else:
     st.warning("No prediction found for this hour.")
 
@@ -93,32 +94,26 @@ st.markdown(f"### 📊 Prediction Timeline for **{selected_station}**")
 chart = alt.Chart(filtered_df).mark_line(point=True).encode(
     x='target_hour:T',
     y='predicted_trip_count:Q',
-    tooltip=['target_hour:T', 'predicted_trip_count']
+    tooltip=[alt.Tooltip('target_hour:T', format='%Y-%m-%d %H'), 'predicted_trip_count']
 ).properties(height=400)
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# Prediction Table (Rounded & Timezone-Aware)
+# Prediction Table (Rounded + EST + Cleaned Timestamps)
 # -----------------------------
 st.markdown("### 🧾 Prediction Table (Next 24 Hours by Time)")
 
 rounded_df = filtered_df.copy()
 rounded_df['predicted_trip_count'] = rounded_df['predicted_trip_count'].round(0).astype(int)
-
-# Convert to EST
-eastern = pytz.timezone("America/New_York")
 rounded_df['target_hour'] = pd.to_datetime(rounded_df['target_hour']).dt.tz_convert(eastern)
+rounded_df['target_hour'] = rounded_df['target_hour'].dt.strftime('%Y-%m-%d %H')  # No minutes/seconds
 
-# Sort by time
 st.dataframe(
     rounded_df.sort_values("target_hour", ascending=True)[
         ['target_hour', 'predicted_trip_count']
     ],
     use_container_width=True
 )
-
-
-
 
 # -----------------------------
 # Footer
