@@ -98,7 +98,7 @@ def write_top3_data(filepaths, top3, output=OUTPUT_FILE):
     first_write = True
     for path in filepaths:
         try:
-            for chunk in pd.read_csv(path, usecols=TARGET_COLS, dtype=DTYPES, chunksize=CHUNK_SIZE, low_memory=False):
+            for chunk in pd.read_csv(path, usecols=TARGET_COLS, chunksize=CHUNK_SIZE, low_memory=False):
                 chunk = chunk.dropna(subset=["start_station_name"])
                 filtered = chunk[chunk["start_station_name"].isin(top3)]
                 if not filtered.empty:
@@ -133,10 +133,7 @@ def clean_and_engineer_features(file_path):
     df['start_station_id'] = df['start_station_id'].fillna('-1').astype(str)
     df['end_station_id'] = df['end_station_id'].fillna('-1').astype(str)
 
-    # 6. Convert string columns
-    string_cols = ['ride_id', 'rideable_type', 'start_station_name', 'end_station_name', 'member_casual']
-    for col in string_cols:
-        df[col] = df[col].astype(str)
+
 
     df['rideable_type'] = df['rideable_type'].astype('category')
     df['member_casual'] = df['member_casual'].astype('category')
