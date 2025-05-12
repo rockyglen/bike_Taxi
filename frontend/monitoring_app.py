@@ -8,14 +8,14 @@ from dotenv import load_dotenv
 from sklearn.metrics import mean_absolute_error
 
 # -----------------------------
-# 🌐 Streamlit App Setup
+# 🌐 Streamlit Setup
 # -----------------------------
 st.set_page_config(page_title="Citi Bike Model Monitoring", layout="wide")
 st.title("📊 Citi Bike Model Monitoring Dashboard")
 st.markdown("Monitoring prediction accuracy, drift, and trends in **Eastern Time (US/Eastern)**.")
 
 # -----------------------------
-# 🔐 Hopsworks Connection
+# 🔐 Hopsworks Login
 # -----------------------------
 @st.cache_resource
 def connect_to_hopsworks():
@@ -29,9 +29,8 @@ def connect_to_hopsworks():
 fs = connect_to_hopsworks()
 
 # -----------------------------
-# 📥 Load Predictions in EST
+# 📥 Load Predictions
 # -----------------------------
-
 @st.cache_data(ttl=1800)
 def load_predictions():
     fg = fs.get_feature_group("citi_bike_predictions", version=3)
@@ -40,7 +39,6 @@ def load_predictions():
     df["prediction_time"] = pd.to_datetime(df["prediction_time"])
     df["predicted_trip_count"] = df["predicted_trip_count"].astype("float32")
 
-    # Robust UTC → EST handling
     if df["target_hour"].dt.tz is None:
         df["target_hour"] = df["target_hour"].dt.tz_localize("UTC")
     else:
@@ -55,9 +53,8 @@ def load_predictions():
 
     return df.sort_values("target_hour")
 
-
 # -----------------------------
-# 📥 Load Actuals in EST
+# 📥 Load Actuals
 # -----------------------------
 @st.cache_data(ttl=1800)
 def load_actuals():
@@ -74,32 +71,48 @@ def load_actuals():
     actual_df = df.groupby("start_hour").size().reset_index(name="actual_trip_count")
     return actual_df.sort_values("start_hour")
 
-
-# -----------------------------
-# 🧠 Data Processing & Merge
-# -----------------------------
 pred_df = load_predictions()
 actual_df = load_actuals()
 
+# -----------------------------
+# 🔍 Debug Timestamp Alignment
+# -----------------------------
+st.subheader("⏱ Timestamp Debug (last 5 rows)")
+st.write("**Prediction `target_hour` (tail):**", pred_df["target_hour"].astype(str).tail())
+st.write("**Actual `start_hour` (tail):**", actual_df["start_hour"].astype(str).tail())
+
+# -----------------------------
+# 🤝 Merge Predictions + Actuals
+# -----------------------------
+# Try exact merge
 merged = pd.merge(
     pred_df,
     actual_df,
     left_on="target_hour",
     right_on="start_hour",
     how="inner"
-).drop(columns=["start_hour"])
+)
+
+# If merge failed, try fuzzy fallback
+if merged.empty:
+    st.warning("⚠️ Exact merge failed. Trying fuzzy merge with 1-minute tolerance...")
+    merged = pd.merge_asof(
+        pred_df.sort_values("target_hour"),
+        actual_df.sort_values("start_hour"),
+        left_on="target_hour",
+        right_on="start_hour",
+        tolerance=pd.Timedelta("1min"),
+        direction="nearest"
+    ).dropna()
+
+if merged.empty:
+    st.error("❌ No overlapping prediction and actual data found. Check timestamps and feature groups.")
+    st.stop()
 
 merged = merged[["target_hour", "predicted_trip_count", "actual_trip_count"]]
 merged["error"] = merged["predicted_trip_count"] - merged["actual_trip_count"]
 merged["abs_error"] = merged["error"].abs()
 merged["hour"] = merged["target_hour"].dt.strftime("%Y-%m-%d %H:%M")
-
-# -----------------------------
-# 🚨 Handle Empty Merge
-# -----------------------------
-if merged.empty:
-    st.warning("❌ No overlapping prediction and actual data found. Ensure timestamps match and both feature groups are populated.")
-    st.stop()
 
 # -----------------------------
 # 📊 Metrics
@@ -109,17 +122,16 @@ max_error_hour = merged.iloc[merged["abs_error"].idxmax()]["hour"]
 max_abs_error = merged["abs_error"].max()
 
 col1, col2, col3 = st.columns(3)
-
 col1.metric("Mean Absolute Error", f"{mae:.2f}")
 col2.metric("Max Error Hour", max_error_hour)
 col3.metric("Max Absolute Error", f"{int(max_abs_error)}")
 
 # -----------------------------
-# 📈 Prediction vs Actual Plot
+# 📈 Forecast vs Actual Plot
 # -----------------------------
-st.subheader("📉 Prediction vs. Actuals (US/Eastern)")
+st.subheader("📉 Prediction vs. Actual (US/Eastern)")
 
-error_chart = alt.Chart(merged).transform_fold(
+chart = alt.Chart(merged).transform_fold(
     ["predicted_trip_count", "actual_trip_count"],
     as_=["Type", "Trip Count"]
 ).mark_line(point=True).encode(
@@ -129,10 +141,10 @@ error_chart = alt.Chart(merged).transform_fold(
     tooltip=["hour", "Trip Count", "Type"]
 ).properties(width=900, height=400)
 
-st.altair_chart(error_chart, use_container_width=True)
+st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# 🔍 Error Distribution
+# 🧪 Error Histogram
 # -----------------------------
 st.subheader("🧪 Absolute Error Distribution")
 
@@ -145,18 +157,13 @@ hist = alt.Chart(merged).mark_bar().encode(
 st.altair_chart(hist)
 
 # -----------------------------
-# 🧾 Raw Data Table
+# 🔍 Raw Table
 # -----------------------------
 with st.expander("🔍 View Merged Data Table"):
     st.dataframe(merged, use_container_width=True)
 
 # -----------------------------
-# 🧭 Footer
+# ✅ Footer
 # -----------------------------
 st.markdown("---")
-st.markdown(
-    """
-    Built with ❤️ using Streamlit + Hopsworks + Altair.  
-    Timestamps are shown in **US/Eastern** time.
-    """
-)
+st.markdown("Built with ❤️ using Streamlit + Hopsworks + Altair. All times shown in **US/Eastern**.")
