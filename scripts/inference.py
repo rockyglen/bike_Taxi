@@ -2,12 +2,12 @@ import os
 import pandas as pd
 import lightgbm as lgb
 import hopsworks
-from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import pytz
 
 # -----------------------------
-# 🔐 Load environment variables
+# 🔐 Load env variables
 # -----------------------------
 load_dotenv()
 
@@ -22,102 +22,87 @@ fs = project.get_feature_store()
 mr = project.get_model_registry()
 
 # -----------------------------
-# 📦 Load raw trip data
+# 🕒 Current time (EST, floored)
+# -----------------------------
+eastern = pytz.timezone("US/Eastern")
+now = datetime.now(eastern).replace(minute=0, second=0, microsecond=0)
+start_prediction_hour = now + timedelta(hours=1)
+
+# -----------------------------
+# 🧠 Load latest model
+# -----------------------------
+model = mr.get_model("citi_bike_lgbm_full", version=None)
+model_dir = model.download()
+booster = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
+
+# -----------------------------
+# 📦 Load historical data
 # -----------------------------
 fg = fs.get_feature_group("citi_bike_trips", version=1)
 df = fg.read()
+df["start_hour"] = pd.to_datetime(df["started_at"]).dt.floor("H")
+
+hourly_df = df.groupby("start_hour").size().reset_index(name="trip_count")
+hourly_df = hourly_df.sort_values("start_hour").reset_index(drop=True)
 
 # -----------------------------
-# 🧹 Preprocess to get hourly trip count
+# 🧠 Build 28-lag rolling window
 # -----------------------------
-df['start_hour'] = pd.to_datetime(df['started_at']).dt.floor('H')
-hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
-hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
+latest_window = hourly_df.tail(28).copy()
+if len(latest_window) < 28:
+    raise ValueError("Not enough historical data to generate lag features.")
 
-# -----------------------------
-# 🕒 Time reference
-# -----------------------------
-eastern = pytz.timezone("US/Eastern")
-now_est = datetime.now(eastern).replace(minute=0, second=0, microsecond=0)
-prediction_time = now_est  # fixed per run
+lags = list(latest_window["trip_count"].values)
+predictions = []
+target_hours = []
 
-# Filter only up to now - 1 hour
-hourly_df = hourly_df[hourly_df['start_hour'] <= now_est - timedelta(hours=1)]
-print(f"✅ Data available for prediction: {hourly_df.shape[0]} rows")
-
-# -----------------------------
-# 📉 Get last 28 lag values
-# -----------------------------
-lag_series = hourly_df['trip_count'].tail(28)
-if lag_series.shape[0] < 28:
-    raise ValueError("❌ Not enough lag data to run inference.")
-
-lag_values = lag_series.tolist()
-current_hour = now_est
+for step in range(1, 25):
+    X = pd.DataFrame([lags[-28:]], columns=[f"lag_{i}" for i in range(1, 29)])
+    pred = booster.predict(X)[0]
+    prediction_time = start_prediction_hour + timedelta(hours=step - 1)
+    predictions.append(pred)
+    target_hours.append(prediction_time)
+    lags.append(pred)
 
 # -----------------------------
-# 📥 Load global model
+# 🧾 Format prediction results
 # -----------------------------
-models = mr.get_models("citi_bike_lgbm_full")
-if not models:
-    raise RuntimeError("❌ No model found with name 'citi_bike_lgbm_full'.")
-
-latest_model = sorted(models, key=lambda m: m.version)[-1]
-model_dir = latest_model.download()
-model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
+pred_df = pd.DataFrame({
+    "prediction_time": [now] * 24,
+    "target_hour": target_hours,
+    "predicted_trip_count": predictions
+})
 
 # -----------------------------
-# 🔮 Predict next 168 hours
+# 🗃️ Create or reuse prediction FG
 # -----------------------------
-all_predictions = []
-for _ in range(168):
-    X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
-    prediction = model.predict(X_input)[0]
-    current_hour += timedelta(hours=1)
+pred_fg_name = "citi_bike_predictions"
+pred_fg_version = 2
 
-    all_predictions.append({
-        'prediction_time': prediction_time,
-        'target_hour': current_hour,
-        'predicted_trip_count': prediction
-    })
-    lag_values.append(prediction)
-
-pred_df = pd.DataFrame(all_predictions)
-
-if pred_df.empty:
-    raise RuntimeError("❌ Prediction DataFrame is empty.")
-
-# -----------------------------
-# 🧨 Delete and recreate feature group (Batch mode, offline-only, no Kafka)
-# -----------------------------
-fg_name = "citi_bike_predictions_global"
-fg_version = 1
-
-# Delete existing FG if it exists
 try:
-    old_fg = fs.get_feature_group(fg_name, version=fg_version)
-    old_fg.delete()
-    print(f"⚠️ Deleted existing feature group: {fg_name}_v{fg_version}")
+    pred_fg = fs.get_feature_group(name=pred_fg_name, version=pred_fg_version)
+    print("📦 Using existing feature group.")
 except:
-    print(f"✅ No existing feature group found for deletion")
+    print("🛠️ Creating new feature group...")
+    from hsfs.feature_group import FeatureGroup
 
-# ✅ Recreate FG in strict batch mode with event_time to bypass Kafka
-pred_fg = fs.create_feature_group(
-    name=fg_name,
-    version=fg_version,
-    primary_key=["prediction_time"],
-    description="Global forecast of Citi Bike trip counts for next 168 hours",
-    online_enabled=False,
-    event_time="prediction_time"  # ✅ THIS FIX IS CRITICAL
-)
+    pred_fg = FeatureGroup(
+        name=pred_fg_name,
+        version=pred_fg_version,
+        description="24-hour LGBM trip predictions",
+        primary_key=["prediction_time", "target_hour"],
+        event_time="prediction_time",
+        online_enabled=False
+    )
+    fs.create_feature_group(pred_fg)
+    pred_fg.save(pred_df)
+    print("✅ Feature group created and schema saved.")
 
 # -----------------------------
-# 🗃️ Insert into offline store
+# 📤 Insert predictions
 # -----------------------------
-pred_fg.insert(
-    pred_df,
-    overwrite=True,
-    write_options={"storage": "offline", "external": False, "wait_for_job": True}
-)
-
-print("✅ Global predictions successfully logged to offline feature store.")
+try:
+    pred_fg.insert(pred_df)
+    print("✅ 24-hour predictions successfully logged.")
+except Exception as e:
+    print(f"❌ Insert failed: {e}")

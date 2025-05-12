@@ -1,22 +1,36 @@
+"""
+feature_engineering.py
+
+Pipeline for:
+1. Downloading Citi Bike trip data for the past 12 months.
+2. Extracting and filtering top 3 most frequent start stations.
+3. Cleaning and parsing records.
+4. Uploading to Hopsworks feature store.
+5. Cleaning up temporary files.
+"""
+
+# === Imports ===
 import os
 import requests
 import zipfile
-import polars as pl
+import pandas as pd
 import shutil
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pytz
 from io import BytesIO
 from collections import Counter
-import time
+from dotenv import load_dotenv
 
+import hopsworks
+from hsfs.feature_group import FeatureGroup
+
+# === Config ===
 TEMP_FOLDER = "tripdata_temp"
 OUTPUT_FILE = "top3_stations_output.csv"
-PARQUET_OUTPUT = "tabular_citibike.parquet"
 CHUNK_SIZE = 500_000
-WINDOW_SIZE = 24 * 28
-STEP_SIZE = 24
 
+# Target columns from the CSVs
 TARGET_COLS = [
     "ride_id", "rideable_type", "started_at", "ended_at",
     "start_station_name", "start_station_id",
@@ -25,159 +39,122 @@ TARGET_COLS = [
     "member_casual"
 ]
 
+# === Helpers ===
+
 def get_last_12_months_est():
+    """Get last 12 months in 'YYYYMM' format (Eastern Time)."""
     eastern = pytz.timezone("US/Eastern")
     now_est = datetime.now(eastern)
     return [(now_est - relativedelta(months=i + 1)).strftime('%Y%m') for i in range(12)]
 
 def download_zip_to_memory(ym):
+    """Download Citi Bike ZIP file for a given YYYYMM into memory."""
     base_url = "https://s3.amazonaws.com/tripdata/"
-    filenames = [f"{ym}-citibike-tripdata.zip", f"{ym}-citibike-tripdata.csv.zip"]
-    for fname in filenames:
-        url = base_url + fname
+    filenames = [
+        f"{ym}-citibike-tripdata.zip",
+        f"{ym}-citibike-tripdata.csv.zip"
+    ]
+    for filename in filenames:
+        url = base_url + filename
         try:
             print(f"🌐 Trying: {url}")
-            r = requests.get(url, timeout=20)
-            if r.status_code == 200:
-                print(f"✅ Downloaded: {fname}")
-                return BytesIO(r.content)
+            response = requests.get(url, timeout=30)
+            if response.status_code == 200:
+                print(f"✅ Downloaded: {filename}")
+                return BytesIO(response.content)
         except Exception as e:
-            print(f"⚠️ Error downloading {url}: {e}")
+            print(f"❌ Failed: {url} with error {e}")
     return None
 
-def extract_all_csvs(zip_bytes_io, extract_to):
-    try:
-        with zipfile.ZipFile(zip_bytes_io) as zf:
-            extracted_files = 0
-            for member in zf.namelist():
-                if member.endswith('.csv'):
-                    print(f"📁 Extracting CSV: {member}")
-                    zf.extract(member, extract_to)
-                    extracted_files += 1
-            print(f"✅ Extracted {extracted_files} CSV files.")
-    except Exception as e:
-        print(f"⚠️ Error extracting zip: {e}")
+def extract_csvs_from_zip(zip_bytes, temp_folder):
+    """Extract CSVs from a ZIP file in memory to temp folder."""
+    os.makedirs(temp_folder, exist_ok=True)
+    with zipfile.ZipFile(zip_bytes) as zf:
+        extracted = []
+        for file in zf.namelist():
+            if file.endswith(".csv"):
+                print(f"📁 Extracting CSV: {file}")
+                zf.extract(file, path=temp_folder)
+                extracted.append(os.path.join(temp_folder, file))
+        return extracted
 
-def flatten_csvs_folder(root_folder):
-    return [os.path.join(root, f)
-            for root, _, files in os.walk(root_folder)
-            for f in files if f.endswith(".csv")]
-
-def get_top3_station_names(filepaths):
-    freq = Counter()
-    for path in filepaths:
+def filter_columns_and_concat(csv_files, target_cols):
+    """Read, filter columns, and combine all CSV files."""
+    dfs = []
+    for file in csv_files:
         try:
-            df = pl.read_csv(path, columns=["start_station_name"]).drop_nulls()
-            freq.update(df["start_station_name"].to_list())
+            df = pd.read_csv(file, usecols=target_cols)
+            dfs.append(df)
         except Exception as e:
-            print(f"⚠️ Skipping {path}: {e}")
-    return [name for name, _ in freq.most_common(3)]
+            print(f"⚠️ Skipped {file}: {e}")
+    return pd.concat(dfs, ignore_index=True)
 
-def write_top3_data(filepaths, top3, output=OUTPUT_FILE):
-    top3_set = set(top3)
-    total_written = 0
-    files_written = 0
-    first_write = True
+def get_top3_start_stations(df):
+    """Identify top 3 most frequent start_station_id."""
+    top3 = df['start_station_id'].value_counts().nlargest(3).index.tolist()
+    return top3
 
-    for path in filepaths:
-        written_from_file = 0
-        try:
-            df = pl.read_csv(path, columns=TARGET_COLS)
-            df = df.filter(pl.col("start_station_name").is_in(top3_set))
-            if df.height > 0:
-                mode = 'w' if first_write else 'a'
-                df.write_csv(output, include_header=first_write, separator=",", append=not first_write)
-                total_written += df.height
-                written_from_file = df.height
-                files_written += 1
-                first_write = False
-                print(f"✅ Wrote {written_from_file:,} rows from {os.path.basename(path)}")
-        except Exception as e:
-            print(f"⚠️ Skipping {path}: {e}")
+def filter_to_top3_stations(df, top3_ids):
+    """Filter only records from top 3 start stations."""
+    return df[df['start_station_id'].isin(top3_ids)]
 
-    print(f"📈 Total rows written: {total_written:,}")
-    print(f"🗂️ Files that contributed data: {files_written}/{len(filepaths)}")
+def clean_and_transform(df):
+    """Clean datetime fields and create time-based features."""
+    df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')
+    df['ended_at'] = pd.to_datetime(df['ended_at'], errors='coerce')
+    df = df.dropna(subset=['started_at', 'ended_at'])
 
-def clean_and_aggregate(file_path):
-    print("🧼 Cleaning and aggregating...")
-    df = pl.read_csv(file_path, try_parse_dates=True)
+    df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
+    df = df[df['ride_duration_mins'] > 0]
 
-    df = df.drop_nulls(["started_at", "ride_id", "rideable_type", "start_lat", "start_lng", "end_lat", "end_lng", "member_casual"])
-    df = df.with_columns([
-        pl.col("started_at").str.strptime(pl.Datetime, fmt="%Y-%m-%d %H:%M:%S", strict=False).alias("started_at_dt")
-    ]).drop_nulls(["started_at_dt"])
+    df['start_hour'] = df['started_at'].dt.floor('H')
+    df['hour_of_day'] = df['started_at'].dt.hour
+    df['day_of_week'] = df['started_at'].dt.dayofweek
+    df['month'] = df['started_at'].dt.month
 
-    df = df.with_columns([
-        pl.col("started_at_dt").dt.convert_time_zone("US/Eastern").alias("est"),
-        pl.col("start_station_name").fill_null("Unknown").cast(pl.Utf8),
-    ])
+    return df
 
-    df = df.with_columns([
-        pl.col("est").dt.truncate("1h").alias("start_hour")
-    ])
+def upload_to_hopsworks(df):
+    """Upload cleaned dataframe to Hopsworks feature store."""
+    load_dotenv()
+    project = hopsworks.login(
+        api_key_value=os.getenv("HOPSWORKS_API_KEY"),
+        project=os.getenv("HOPSWORKS_PROJECT")
+    )
+    fs = project.get_feature_store()
 
-    grouped = df.groupby(["start_station_name", "start_hour"]).agg([
-        pl.count().alias("trip_count")
-    ])
+    fg = FeatureGroup(
+        name="citi_bike_trips",
+        version=1,
+        primary_key=["ride_id"],
+        description="Cleaned Citi Bike trip data for top 3 stations",
+    )
+    fg.insert(df, write_options={"wait_for_job": True})
+    print("✅ Uploaded to Hopsworks!")
 
-    print(f"📊 Aggregated {grouped.shape[0]:,} hourly rows")
-    return grouped
-
-def transform_to_supervised(df, window_size, step_size):
-    print("🧠 Transforming to supervised format...")
-    records = []
-
-    for station in df["start_station_name"].unique():
-        station_df = df.filter(pl.col("start_station_name") == station).sort("start_hour")
-        series = station_df.select("trip_count").to_series().to_list()
-
-        for i in range(0, len(series) - window_size, step_size):
-            X = series[i:i+window_size]
-            y_idx = i + window_size
-            if y_idx < len(series):
-                record = {f"lag_{j+1}": X[j] for j in range(window_size)}
-                record["target"] = series[y_idx]
-                record["start_station_name"] = station
-                records.append(record)
-
-    out = pl.DataFrame(records)
-    print(f"✅ Transformed shape: {out.shape}")
-    return out
-
-def main():
-    start_all = time.time()
-
-    if os.path.exists(TEMP_FOLDER):
-        shutil.rmtree(TEMP_FOLDER)
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
-
-    print("🚀 Downloading + extracting data...")
-    for ym in get_last_12_months_est():
-        zip_mem = download_zip_to_memory(ym)
-        if zip_mem:
-            extract_all_csvs(zip_mem, TEMP_FOLDER)
-
-    all_csvs = flatten_csvs_folder(TEMP_FOLDER)
-    print(f"📂 Total CSVs: {len(all_csvs)}")
-    if not all_csvs:
-        print("❌ No CSVs found.")
-        return
-
-    top3 = get_top3_station_names(all_csvs)
-    print(f"🏆 Top 3 Stations: {top3}")
-
-    print("📥 Filtering and writing...")
-    write_top3_data(all_csvs, top3)
-
-    print("🧹 Cleaning up...")
-    shutil.rmtree(TEMP_FOLDER)
-
-    hourly_df = clean_and_aggregate(OUTPUT_FILE)
-    supervised_df = transform_to_supervised(hourly_df, WINDOW_SIZE, STEP_SIZE)
-    supervised_df.write_parquet(PARQUET_OUTPUT)
-    print(f"💾 Saved to: {PARQUET_OUTPUT}")
-    print(f"📊 Final rows: {supervised_df.shape[0]:,}")
-    print(f"⏱️ Total time: {time.time() - start_all:.2f} sec")
+# === Main Execution ===
 
 if __name__ == "__main__":
-    main()
+    months = get_last_12_months_est()
+    all_csv_paths = []
+
+    for ym in months:
+        zip_bytes = download_zip_to_memory(ym)
+        if zip_bytes:
+            extracted = extract_csvs_from_zip(zip_bytes, TEMP_FOLDER)
+            all_csv_paths.extend(extracted)
+
+    df_all = filter_columns_and_concat(all_csv_paths, TARGET_COLS)
+    top3_ids = get_top3_start_stations(df_all)
+    df_top3 = filter_to_top3_stations(df_all, top3_ids)
+    df_cleaned = clean_and_transform(df_top3)
+
+    df_cleaned.to_csv(OUTPUT_FILE, index=False)
+    print(f"✅ Saved cleaned data to {OUTPUT_FILE}")
+
+    upload_to_hopsworks(df_cleaned)
+
+    # Final cleanup
+    if os.path.exists(TEMP_FOLDER):
+        shutil.rmtree(TEMP_FOLDER)
+        print(f"🧹 Cleaned up temp folder: {TEMP_FOLDER}")
