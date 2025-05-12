@@ -64,18 +64,6 @@ def load_latest_predictions():
 pred_df = load_latest_predictions()
 
 # -----------------------------
-# 🪧 Show Next 5 Hour Forecast as Markdown
-# -----------------------------
-next_5 = pred_df.head(5)
-
-st.markdown("### ⏱️ Next 5-Hour Forecast (US/Eastern)")
-st.markdown(
-    next_5[["target_hour", "predicted_trip_count"]]
-    .fillna("N/A")
-    .to_markdown(index=False, tablefmt="grid")
-)
-
-# -----------------------------
 # 🎨 Streamlit UI
 # -----------------------------
 st.title("🚲 Citi Bike Trip Prediction Dashboard")
