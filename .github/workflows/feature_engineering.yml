@@ -3,7 +3,7 @@ name: Feature Engineering
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * *'  # daily at 2AM UTC
+    - cron: '0 5 1 * *'  # Run at 5:00 AM UTC on the 1st of every month (12 AM EST)
 
 jobs:
   feature_engineering:
