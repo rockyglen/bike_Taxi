@@ -136,9 +136,10 @@ def upload_to_hopsworks():
         "day_of_week": "str"
     }, low_memory=False)
 
-    df["start_hour"] = pd.to_datetime(df["start_hour"])
-    df["started_at"] = pd.to_datetime(df["started_at"])
-    df["ended_at"] = pd.to_datetime(df["ended_at"])
+    df["start_hour"] = pd.to_datetime(df["start_hour"], format="mixed", errors="coerce")
+    df["started_at"] = pd.to_datetime(df["started_at"], format="mixed", errors="coerce")
+    df["ended_at"] = pd.to_datetime(df["ended_at"], format="mixed", errors="coerce")
+
     df["hour_of_day"] = df["hour_of_day"].astype("int32")
     df["month"] = df["month"].astype("int32")
 
