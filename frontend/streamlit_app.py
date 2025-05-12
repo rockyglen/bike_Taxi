@@ -7,6 +7,11 @@ import streamlit as st
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
+# --------------------------------------
+# ✅ Must be the first Streamlit command
+# --------------------------------------
+st.set_page_config(page_title="Citi Bike Forecast", layout="wide")
+
 # -----------------------------
 # 🔐 Load secrets + Hopsworks login
 # -----------------------------
@@ -44,7 +49,6 @@ now_est = datetime.now(eastern)
 # -----------------------------
 # 🎨 Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Citi Bike Forecast", layout="wide")
 st.title("🚲 Citi Bike Trip Prediction Dashboard")
 st.markdown(f"""
 This dashboard shows predicted Citi Bike trip counts for the next 24 hours, 
