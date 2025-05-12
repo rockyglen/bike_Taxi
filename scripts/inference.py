@@ -26,26 +26,30 @@ df = fg.read()
 df['start_hour'] = pd.to_datetime(df['start_hour'])
 df = df.sort_values(['start_station_name', 'start_hour'])
 
-# Get top 3 stations
+# Get top 3 stations by trip volume
 top3_stations = df['start_station_name'].value_counts().nlargest(3).index.tolist()
 
 # -----------------------------
-# 3. Prediction block
+# 3. Prediction setup
 # -----------------------------
 eastern = pytz.timezone("US/Eastern")
 now_est = datetime.now(eastern).replace(minute=0, second=0, microsecond=0)
+prediction_time = datetime.now(eastern)  # Keep this fixed across 168 predictions
 
 all_predictions = []
 
+# -----------------------------
+# 4. Predict for each top station
+# -----------------------------
 for station in top3_stations:
     print(f"🔮 Predicting for station: {station}")
-    
+
     station_df = df[df['start_station_name'] == station].copy()
     station_df = station_df[station_df['start_hour'] <= now_est - timedelta(hours=1)]
     station_df = station_df.sort_values('start_hour')
-    
+
     lag_series = station_df['trip_count'].tail(28)
-    
+
     if lag_series.shape[0] < 28:
         print(f"⚠️ Skipping {station}: not enough lag data.")
         continue
@@ -53,11 +57,10 @@ for station in top3_stations:
     lag_values = lag_series.tolist()
     current_hour = now_est
 
-    # -----------------------------
-    # Load latest station-specific model
-    # -----------------------------
+    # Load latest model for this station
     model_name = f"citi_bike_lgbm_{station.replace(' ', '_').lower()}"
     models = mr.get_models(model_name)
+
     if not models:
         print(f"⚠️ No model found for {station}. Skipping.")
         continue
@@ -66,16 +69,14 @@ for station in top3_stations:
     model_dir = latest_model.download()
     model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
 
-    # -----------------------------
     # Predict next 168 hours
-    # -----------------------------
     for _ in range(168):
         X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
         prediction = model.predict(X_input)[0]
         current_hour += timedelta(hours=1)
 
         all_predictions.append({
-            'prediction_time': datetime.now(eastern),
+            'prediction_time': prediction_time,
             'target_hour': current_hour,
             'predicted_trip_count': prediction,
             'start_station_name': station
@@ -83,7 +84,7 @@ for station in top3_stations:
         lag_values.append(prediction)
 
 # -----------------------------
-# 4. Insert into Hopsworks
+# 5. Insert into Feature Store
 # -----------------------------
 pred_df = pd.DataFrame(all_predictions)
 
