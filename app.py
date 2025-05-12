@@ -17,29 +17,45 @@ st.title("🚲 Citi Bike Global Trip Forecast (Next 7 Days)")
 # Hopsworks Login
 # -----------------------------
 load_dotenv()
-project = hopsworks.login(
-    api_key_value=os.getenv("HOPSWORKS_API_KEY"),
-    project=os.getenv("HOPSWORKS_PROJECT")
-)
-fs = project.get_feature_store()
+try:
+    project = hopsworks.login(
+        api_key_value=os.getenv("HOPSWORKS_API_KEY"),
+        project=os.getenv("HOPSWORKS_PROJECT")
+    )
+    fs = project.get_feature_store()
+except Exception as e:
+    st.error(f"❌ Failed to connect to Hopsworks: {e}")
+    st.stop()
 
 # -----------------------------
-# Load Predictions (Global Forecast)
+# Load Global Predictions
 # -----------------------------
-pred_fg = fs.get_feature_group("citi_bike_predictions_global", version=1)
-pred_df = pred_fg.read()
-pred_df['prediction_time'] = pd.to_datetime(pred_df['prediction_time'])
-pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
+try:
+    pred_fg = fs.get_feature_group("citi_bike_predictions_global", version=1)
+    pred_df = pred_fg.read()
 
-# Convert to EST
+    if pred_df.empty:
+        st.warning("⚠️ Feature group loaded but contains no data.")
+        st.stop()
+
+    pred_df['prediction_time'] = pd.to_datetime(pred_df['prediction_time'])
+    pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
+except Exception as e:
+    st.error(f"❌ Could not load prediction data: {e}")
+    st.stop()
+
+# -----------------------------
+# Filter Predictions (Next 7 Days)
+# -----------------------------
 eastern = pytz.timezone("America/New_York")
 now_est = datetime.now(pytz.utc).astimezone(eastern).replace(minute=0, second=0, microsecond=0)
 end_est = now_est + timedelta(hours=168)
+
 pred_df['target_hour'] = pred_df['target_hour'].dt.tz_convert(eastern)
 pred_df = pred_df[(pred_df['target_hour'] >= now_est) & (pred_df['target_hour'] < end_est)]
 
 # -----------------------------
-# Hour Selector (Next 5)
+# Hour Selector (Next 5 Hours)
 # -----------------------------
 st.markdown("### 🕒 Select an Hour (EST) to View Prediction")
 next_5_est = [(now_est + timedelta(hours=i)) for i in range(1, 6)]
@@ -48,7 +64,7 @@ selected_label = st.selectbox("Select Target Hour", list(option_map.keys()))
 selected_time = option_map[selected_label]
 
 # -----------------------------
-# Display Prediction
+# Show Selected Prediction
 # -----------------------------
 matched = pred_df[pred_df['target_hour'] == selected_time]
 if not matched.empty:
@@ -59,13 +75,16 @@ else:
     st.warning("No prediction found for this hour.")
 
 # -----------------------------
-# Line Chart
+# Timeline Chart
 # -----------------------------
 st.markdown("### 📊 Prediction Timeline (Next 7 Days)")
 chart = alt.Chart(pred_df).mark_line(point=True).encode(
     x='target_hour:T',
     y='predicted_trip_count:Q',
-    tooltip=[alt.Tooltip('target_hour:T', format='%Y-%m-%d %H'), 'predicted_trip_count']
+    tooltip=[
+        alt.Tooltip('target_hour:T', format='%Y-%m-%d %H'),
+        'predicted_trip_count'
+    ]
 ).properties(height=400)
 st.altair_chart(chart, use_container_width=True)
 
