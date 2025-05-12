@@ -27,7 +27,7 @@ project = init_hopsworks_connection()
 fs = project.get_feature_store()
 
 # -----------------------------
-# 📦 Load prediction feature group (convert to US/Eastern)
+# 📦 Load prediction feature group (filter to next 24h from now in EST)
 # -----------------------------
 @st.cache_data(ttl=1800)
 def load_latest_predictions():
@@ -38,6 +38,7 @@ def load_latest_predictions():
     df["prediction_time"] = pd.to_datetime(df["prediction_time"])
     df["predicted_trip_count"] = df["predicted_trip_count"].astype("float32")
 
+    # Convert to US/Eastern timezone
     if df["target_hour"].dt.tz is None:
         df["target_hour"] = df["target_hour"].dt.tz_localize("UTC")
     df["target_hour"] = df["target_hour"].dt.tz_convert("US/Eastern")
@@ -45,6 +46,11 @@ def load_latest_predictions():
     if df["prediction_time"].dt.tz is None:
         df["prediction_time"] = df["prediction_time"].dt.tz_localize("UTC")
     df["prediction_time"] = df["prediction_time"].dt.tz_convert("US/Eastern")
+
+    # 🔥 Filter for next 24 hours from current US/Eastern time
+    now_est = datetime.now(pytz.timezone("US/Eastern")).replace(minute=0, second=0, microsecond=0)
+    future_24h = now_est + timedelta(hours=24)
+    df = df[(df["target_hour"] >= now_est) & (df["target_hour"] < future_24h)]
 
     return df.sort_values("target_hour")
 
