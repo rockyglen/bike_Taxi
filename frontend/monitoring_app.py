@@ -31,6 +31,7 @@ fs = connect_to_hopsworks()
 # -----------------------------
 # 📥 Load Predictions in EST
 # -----------------------------
+
 @st.cache_data(ttl=1800)
 def load_predictions():
     fg = fs.get_feature_group("citi_bike_predictions", version=3)
@@ -39,15 +40,21 @@ def load_predictions():
     df["prediction_time"] = pd.to_datetime(df["prediction_time"])
     df["predicted_trip_count"] = df["predicted_trip_count"].astype("float32")
 
+    # Robust UTC → EST handling
     if df["target_hour"].dt.tz is None:
         df["target_hour"] = df["target_hour"].dt.tz_localize("UTC")
+    else:
+        df["target_hour"] = df["target_hour"].dt.tz_convert("UTC")
     df["target_hour"] = df["target_hour"].dt.tz_convert("US/Eastern")
 
     if df["prediction_time"].dt.tz is None:
         df["prediction_time"] = df["prediction_time"].dt.tz_localize("UTC")
+    else:
+        df["prediction_time"] = df["prediction_time"].dt.tz_convert("UTC")
     df["prediction_time"] = df["prediction_time"].dt.tz_convert("US/Eastern")
 
     return df.sort_values("target_hour")
+
 
 # -----------------------------
 # 📥 Load Actuals in EST
@@ -60,10 +67,13 @@ def load_actuals():
 
     if df["start_hour"].dt.tz is None:
         df["start_hour"] = df["start_hour"].dt.tz_localize("UTC")
+    else:
+        df["start_hour"] = df["start_hour"].dt.tz_convert("UTC")
     df["start_hour"] = df["start_hour"].dt.tz_convert("US/Eastern")
 
     actual_df = df.groupby("start_hour").size().reset_index(name="actual_trip_count")
     return actual_df.sort_values("start_hour")
+
 
 # -----------------------------
 # 🧠 Data Processing & Merge
