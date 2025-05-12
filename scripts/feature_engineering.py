@@ -2,10 +2,10 @@
 feature_engineering_parallel.py
 
 Fast + RAM-safe Citi Bike pipeline:
-- Parallel download & unzip
+- Parallel download + unzip
 - Per-month processing (top 3 stations)
-- Stream to CSV to save RAM
-- Upload to Hopsworks with correct schema
+- Streams to disk
+- Uploads to Hopsworks with schema-safe types
 """
 
 import os
@@ -70,7 +70,7 @@ def download_and_extract(ym):
             print(f"❌ Failed for {fname}: {e}")
     return []
 
-# === STATION FREQUENCY ===
+# === TOP STATION SELECTION ===
 
 def build_top3_station_counter(months):
     counter = Counter()
@@ -115,7 +115,7 @@ def process_month(ym, top3_ids):
             print(f"⚠️ Failed to process {file}: {e}")
         os.remove(file)
 
-# === UPLOAD TO HOPSWORKS ===
+# === HOPSWORKS UPLOAD ===
 
 def upload_to_hopsworks():
     load_dotenv()
@@ -136,19 +136,31 @@ def upload_to_hopsworks():
         "day_of_week": "str"
     }, low_memory=False)
 
+    # Convert timestamps (mixed format safe)
     df["start_hour"] = pd.to_datetime(df["start_hour"], format="mixed", errors="coerce")
     df["started_at"] = pd.to_datetime(df["started_at"], format="mixed", errors="coerce")
     df["ended_at"] = pd.to_datetime(df["ended_at"], format="mixed", errors="coerce")
 
-    df["hour_of_day"] = df["hour_of_day"].astype("int32")
-    df["month"] = df["month"].astype("int32")
+    # Drop bad timestamp rows
+    df.dropna(subset=["start_hour", "started_at", "ended_at"], inplace=True)
+
+    # Ensure int columns are correct
+    df["hour_of_day"] = df["hour_of_day"].fillna(-1).astype("int32")
+    df["month"] = df["month"].fillna(-1).astype("int32")
+
+    # Replace NaN with None for Avro-safe string fields
+    string_cols = [
+        "ride_id", "rideable_type", "start_station_name", "start_station_id",
+        "end_station_name", "end_station_id", "member_casual", "day_of_week"
+    ]
+    df[string_cols] = df[string_cols].where(pd.notnull(df[string_cols]), None)
 
     fg = fs.get_or_create_feature_group(
         name="citi_bike_trips",
         version=1,
         primary_key=["ride_id"],
         event_time="start_hour",
-        description="Top 3 Citi Bike stations - fast and type-safe"
+        description="Top 3 Citi Bike stations - hardened pipeline"
     )
 
     fg.insert(df, write_options={"wait_for_job": True})
