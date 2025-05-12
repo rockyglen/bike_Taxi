@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 # -----------------------------
 # Streamlit setup
 # -----------------------------
-st.set_page_config(page_title="Citi Bike Trip Prediction", layout="wide")
-st.title("🚲 Citi Bike Hourly Trip Prediction Dashboard")
+st.set_page_config(page_title="Citi Bike Global Trip Forecast", layout="wide")
+st.title("🚲 Citi Bike Global Trip Forecast (Next 7 Days)")
 
 # -----------------------------
 # Hopsworks Login
@@ -24,79 +24,45 @@ project = hopsworks.login(
 fs = project.get_feature_store()
 
 # -----------------------------
-# Load & Filter Predictions (Next 24 hours only)
+# Load Predictions (Global Forecast)
 # -----------------------------
-pred_fg = fs.get_feature_group("citi_bike_predictions", version=2)
+pred_fg = fs.get_feature_group("citi_bike_predictions_global", version=1)
 pred_df = pred_fg.read()
 pred_df['prediction_time'] = pd.to_datetime(pred_df['prediction_time'])
 pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
 
-# Filter to next 24 hours in EST
+# Convert to EST
 eastern = pytz.timezone("America/New_York")
 now_est = datetime.now(pytz.utc).astimezone(eastern).replace(minute=0, second=0, microsecond=0)
-end_est = now_est + timedelta(hours=24)
+end_est = now_est + timedelta(hours=168)
 pred_df['target_hour'] = pred_df['target_hour'].dt.tz_convert(eastern)
 pred_df = pred_df[(pred_df['target_hour'] >= now_est) & (pred_df['target_hour'] < end_est)]
 
 # -----------------------------
-# Show Top Station by Volume
+# Hour Selector (Next 5)
 # -----------------------------
-st.markdown("### 🏆 Top Station by Predicted Trip Volume (Next 24h)")
-top_station_df = (
-    pred_df.groupby('start_station_name')['predicted_trip_count']
-    .sum()
-    .sort_values(ascending=False)
-    .reset_index()
-)
-if not top_station_df.empty:
-    top_station = top_station_df.iloc[0]
-    st.success(
-        f"**{top_station['start_station_name']}** is expected to have the most rides "
-        f"with **{int(top_station['predicted_trip_count'])} predicted trips** in the next 24 hours."
-    )
-
-# -----------------------------
-# Station Selection + Filtering
-# -----------------------------
-stations = sorted(pred_df['start_station_name'].unique())
-selected_station = st.selectbox(
-    "📍 Select Start Station (leave empty for all stations)",
-    options=["All Stations"] + stations,
-    index=0
-)
-
-if selected_station != "All Stations":
-    filtered_df = pred_df[pred_df['start_station_name'] == selected_station]
-else:
-    filtered_df = (
-        pred_df.groupby("target_hour", as_index=False)['predicted_trip_count'].sum()
-    )
-    filtered_df['start_station_name'] = "All Stations"
-
-# -----------------------------
-# Generate Next 5 Hour Options (EST)
-# -----------------------------
+st.markdown("### 🕒 Select an Hour (EST) to View Prediction")
 next_5_est = [(now_est + timedelta(hours=i)) for i in range(1, 6)]
 option_map = {t.strftime("%Y-%m-%d %H:%M %Z"): t for t in next_5_est}
-selected_label = st.selectbox("🕒 Select a Target Hour (EST)", list(option_map.keys()))
+selected_label = st.selectbox("Select Target Hour", list(option_map.keys()))
 selected_time = option_map[selected_label]
 
 # -----------------------------
-# Display Prediction Metric
+# Display Prediction
 # -----------------------------
-matched = filtered_df[filtered_df['target_hour'] == selected_time]
+matched = pred_df[pred_df['target_hour'] == selected_time]
 if not matched.empty:
     val = int(matched['predicted_trip_count'].values[0])
-    delta_display = selected_time.strftime("%I %p on %b %d")  # e.g., "12 AM on May 11"
-    st.metric("📈 Predicted Trip Count", value=val, delta=delta_display)
+    delta_display = selected_time.strftime("%I %p on %b %d")
+    st.metric("📈 Predicted Trips", value=val, delta=delta_display)
 else:
     st.warning("No prediction found for this hour.")
 
 # -----------------------------
-# Prediction Timeline
+# Line Chart
 # -----------------------------
-st.markdown(f"### 📊 Prediction Timeline for **{selected_station}**")
-chart = alt.Chart(filtered_df).mark_line(point=True).encode(
+st.markdown("### 📊 Prediction Timeline (Next 7 Days)")
+chart = alt.Chart(pred_df).mark_line(point=True).encode(
     x='target_hour:T',
     y='predicted_trip_count:Q',
     tooltip=[alt.Tooltip('target_hour:T', format='%Y-%m-%d %H'), 'predicted_trip_count']
@@ -104,13 +70,12 @@ chart = alt.Chart(filtered_df).mark_line(point=True).encode(
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# Prediction Table (Rounded & Clean Hour Format)
+# Table View
 # -----------------------------
-st.markdown("### 🧾 Prediction Table (Next 24 Hours by Time)")
-
-rounded_df = filtered_df.copy()
+st.markdown("### 🧾 Full Prediction Table (Rounded)")
+rounded_df = pred_df.copy()
 rounded_df['predicted_trip_count'] = rounded_df['predicted_trip_count'].round(0).astype(int)
-rounded_df['target_hour'] = rounded_df['target_hour'].dt.strftime('%Y-%m-%d %H')  # Only show hour
+rounded_df['target_hour'] = rounded_df['target_hour'].dt.strftime('%Y-%m-%d %H')
 
 st.dataframe(
     rounded_df.sort_values("target_hour", ascending=True)[
@@ -123,4 +88,4 @@ st.dataframe(
 # Footer
 # -----------------------------
 st.markdown("---")
-st.caption("Predictions powered by Hopsworks + LightGBM | Streamlit dashboard by Glen")
+st.caption("Global Forecast | LightGBM + Hopsworks | Dashboard by Glen")
