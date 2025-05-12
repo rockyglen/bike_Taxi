@@ -1,15 +1,14 @@
 """
-feature_engineering_optimized.py
+feature_engineering.py
 
-RAM-efficient Citi Bike data pipeline:
-1. Streams 12 months of trip data from Citi Bike S3.
-2. Dynamically finds the top 3 most active start stations.
-3. Filters and engineers features only for those stations.
-4. Uploads cleaned data to Hopsworks.
-5. Cleans up all temp files and uses minimal memory.
+RAM-efficient Citi Bike pipeline:
+1. Downloads & processes 12 months of Citi Bike data.
+2. Streams CSV chunks to avoid memory overload.
+3. Identifies top 3 most common start stations.
+4. Filters, transforms, and uploads to Hopsworks.
+5. Skips __MACOSX files and handles decoding issues.
 """
 
-# === Imports ===
 import os
 import requests
 import zipfile
@@ -22,9 +21,8 @@ from io import BytesIO
 from collections import Counter
 from dotenv import load_dotenv
 import hopsworks
-from hsfs.feature_group import FeatureGroup
 
-# === Configuration ===
+# === Config ===
 TEMP_FOLDER = "tripdata_temp"
 OUTPUT_FILE = "top3_stations_output.csv"
 CHUNK_SIZE = 100_000
@@ -42,18 +40,19 @@ DTYPE_OVERRIDES = {
     "end_station_id": "str"
 }
 
-# === Helper Functions ===
+# === Helpers ===
 
 def get_last_12_months_est():
-    """Return list of last 12 months as YYYYMM in US Eastern Time."""
     eastern = pytz.timezone("US/Eastern")
     now_est = datetime.now(eastern)
     return [(now_est - relativedelta(months=i + 1)).strftime('%Y%m') for i in range(12)]
 
 def download_zip_to_memory(ym):
-    """Download monthly ZIP from Citi Bike S3 into memory."""
     base_url = "https://s3.amazonaws.com/tripdata/"
-    filenames = [f"{ym}-citibike-tripdata.zip", f"{ym}-citibike-tripdata.csv.zip"]
+    filenames = [
+        f"{ym}-citibike-tripdata.zip",
+        f"{ym}-citibike-tripdata.csv.zip"
+    ]
     for filename in filenames:
         url = base_url + filename
         try:
@@ -66,19 +65,18 @@ def download_zip_to_memory(ym):
     return None
 
 def extract_csvs_from_zip(zip_bytes):
-    """Extract CSVs from a ZIP in memory to disk."""
     os.makedirs(TEMP_FOLDER, exist_ok=True)
     with zipfile.ZipFile(zip_bytes) as zf:
         extracted = []
         for file in zf.namelist():
-            if file.endswith(".csv"):
-                path = os.path.join(TEMP_FOLDER, file)
-                zf.extract(file, TEMP_FOLDER)
+            if file.endswith(".csv") and "__MACOSX" not in file:
+                path = os.path.join(TEMP_FOLDER, os.path.basename(file))
+                with open(path, "wb") as f:
+                    f.write(zf.read(file))
                 extracted.append(path)
         return extracted
 
 def build_top3_station_counter(months):
-    """Stream all months and count start station frequency."""
     counter = Counter()
     for ym in months:
         zip_bytes = download_zip_to_memory(ym)
@@ -95,7 +93,6 @@ def build_top3_station_counter(months):
     return [station for station, _ in counter.most_common(3)]
 
 def process_and_save_filtered_data(months, top3_ids):
-    """Stream-filter-transform only top 3 station trips, return final DataFrame."""
     os.makedirs(TEMP_FOLDER, exist_ok=True)
     output_chunks = []
 
@@ -127,14 +124,14 @@ def process_and_save_filtered_data(months, top3_ids):
     return pd.concat(output_chunks, ignore_index=True)
 
 def upload_to_hopsworks(df):
-    """Push cleaned data to Hopsworks feature store."""
     load_dotenv()
     project = hopsworks.login(
         api_key_value=os.getenv("HOPSWORKS_API_KEY"),
         project=os.getenv("HOPSWORKS_PROJECT")
     )
     fs = project.get_feature_store()
-    fg = FeatureGroup(
+
+    fg = fs.get_or_create_feature_group(
         name="citi_bike_trips",
         version=1,
         primary_key=["ride_id"],
@@ -143,10 +140,10 @@ def upload_to_hopsworks(df):
     fg.insert(df, write_options={"wait_for_job": True})
     print("✅ Uploaded to Hopsworks")
 
-# === Main Logic ===
+# === Main ===
+
 if __name__ == "__main__":
     months = get_last_12_months_est()
-
     print("🔍 Identifying top 3 start stations...")
     top3_ids = build_top3_station_counter(months)
     print(f"🏆 Top 3 start_station_id values: {top3_ids}")
