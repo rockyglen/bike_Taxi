@@ -1,21 +1,21 @@
 import os
 import requests
 import zipfile
-import pandas as pd
+import polars as pl
 import shutil
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pytz
 from io import BytesIO
 from collections import Counter
-from dotenv import load_dotenv
-import hopsworks
-from hsfs.feature_group import FeatureGroup
+import time
 
-# ======================= CONFIG =======================
 TEMP_FOLDER = "tripdata_temp"
 OUTPUT_FILE = "top3_stations_output.csv"
+PARQUET_OUTPUT = "tabular_citibike.parquet"
 CHUNK_SIZE = 500_000
+WINDOW_SIZE = 24 * 28
+STEP_SIZE = 24
 
 TARGET_COLS = [
     "ride_id", "rideable_type", "started_at", "ended_at",
@@ -25,8 +25,6 @@ TARGET_COLS = [
     "member_casual"
 ]
 
-# ======================= DOWNLOAD & EXTRACTION =======================
-
 def get_last_12_months_est():
     eastern = pytz.timezone("US/Eastern")
     now_est = datetime.now(eastern)
@@ -34,10 +32,7 @@ def get_last_12_months_est():
 
 def download_zip_to_memory(ym):
     base_url = "https://s3.amazonaws.com/tripdata/"
-    filenames = [
-        f"{ym}-citibike-tripdata.zip",
-        f"{ym}-citibike-tripdata.csv.zip"
-    ]
+    filenames = [f"{ym}-citibike-tripdata.zip", f"{ym}-citibike-tripdata.csv.zip"]
     for fname in filenames:
         url = base_url + fname
         try:
@@ -46,8 +41,6 @@ def download_zip_to_memory(ym):
             if r.status_code == 200:
                 print(f"✅ Downloaded: {fname}")
                 return BytesIO(r.content)
-            else:
-                print(f"❌ Not found: {url}")
         except Exception as e:
             print(f"⚠️ Error downloading {url}: {e}")
     return None
@@ -55,164 +48,136 @@ def download_zip_to_memory(ym):
 def extract_all_csvs(zip_bytes_io, extract_to):
     try:
         with zipfile.ZipFile(zip_bytes_io) as zf:
+            extracted_files = 0
             for member in zf.namelist():
-                if member.endswith('.zip'):
-                    nested_zip_data = zf.read(member)
-                    with zipfile.ZipFile(BytesIO(nested_zip_data)) as nested_zf:
-                        for nested_member in nested_zf.namelist():
-                            if nested_member.endswith('.csv'):
-                                print(f"📦 Extracting nested CSV: {nested_member}")
-                                nested_zf.extract(nested_member, extract_to)
-                elif member.endswith('.csv'):
+                if member.endswith('.csv'):
                     print(f"📁 Extracting CSV: {member}")
                     zf.extract(member, extract_to)
+                    extracted_files += 1
+            print(f"✅ Extracted {extracted_files} CSV files.")
     except Exception as e:
         print(f"⚠️ Error extracting zip: {e}")
 
 def flatten_csvs_folder(root_folder):
-    flat_files = []
-    for root, _, files in os.walk(root_folder):
-        for fname in files:
-            if fname.endswith(".csv"):
-                full_path = os.path.join(root, fname)
-                flat_files.append(full_path)
-    return flat_files
-
-# ======================= TOP 3 STATION FILTERING =======================
+    return [os.path.join(root, f)
+            for root, _, files in os.walk(root_folder)
+            for f in files if f.endswith(".csv")]
 
 def get_top3_station_names(filepaths):
     freq = Counter()
     for path in filepaths:
         try:
-            for chunk in pd.read_csv(path, usecols=["start_station_name"], dtype={"start_station_name": str}, chunksize=CHUNK_SIZE):
-                chunk = chunk.dropna(subset=["start_station_name"])
-                freq.update(chunk["start_station_name"])
+            df = pl.read_csv(path, columns=["start_station_name"]).drop_nulls()
+            freq.update(df["start_station_name"].to_list())
         except Exception as e:
             print(f"⚠️ Skipping {path}: {e}")
-    top3 = [name for name, _ in freq.most_common(3)]
-    return top3
+    return [name for name, _ in freq.most_common(3)]
 
 def write_top3_data(filepaths, top3, output=OUTPUT_FILE):
+    top3_set = set(top3)
+    total_written = 0
+    files_written = 0
     first_write = True
+
     for path in filepaths:
+        written_from_file = 0
         try:
-            for chunk in pd.read_csv(path, usecols=TARGET_COLS, chunksize=CHUNK_SIZE, low_memory=False):
-                chunk = chunk.dropna(subset=["start_station_name"])
-                filtered = chunk[chunk["start_station_name"].isin(top3)]
-                if not filtered.empty:
-                    filtered.to_csv(output, index=False, mode='a' if not first_write else 'w', header=first_write)
-                    print(f"✅ Written {len(filtered)} rows from {path}")
-                    first_write = False
+            df = pl.read_csv(path, columns=TARGET_COLS)
+            df = df.filter(pl.col("start_station_name").is_in(top3_set))
+            if df.height > 0:
+                mode = 'w' if first_write else 'a'
+                df.write_csv(output, include_header=first_write, separator=",", append=not first_write)
+                total_written += df.height
+                written_from_file = df.height
+                files_written += 1
+                first_write = False
+                print(f"✅ Wrote {written_from_file:,} rows from {os.path.basename(path)}")
         except Exception as e:
             print(f"⚠️ Skipping {path}: {e}")
 
-# ======================= CLEANING & FEATURES =======================
+    print(f"📈 Total rows written: {total_written:,}")
+    print(f"🗂️ Files that contributed data: {files_written}/{len(filepaths)}")
 
-def clean_and_engineer_features(file_path):
-    print("🧼 Cleaning and engineering features...")
-    df = pd.read_csv(file_path)
+def clean_and_aggregate(file_path):
+    print("🧼 Cleaning and aggregating...")
+    df = pl.read_csv(file_path, try_parse_dates=True)
 
-    df.columns = df.columns.str.strip().str.lower()
-    df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')
-    df['ended_at'] = pd.to_datetime(df['ended_at'], errors='coerce')
-    df = df.dropna(subset=['started_at', 'ended_at'])
+    df = df.drop_nulls(["started_at", "ride_id", "rideable_type", "start_lat", "start_lng", "end_lat", "end_lng", "member_casual"])
+    df = df.with_columns([
+        pl.col("started_at").str.strptime(pl.Datetime, fmt="%Y-%m-%d %H:%M:%S", strict=False).alias("started_at_dt")
+    ]).drop_nulls(["started_at_dt"])
 
-    critical_cols = ['ride_id', 'rideable_type', 'start_lat', 'start_lng', 'end_lat', 'end_lng', 'member_casual']
-    df = df.dropna(subset=critical_cols)
+    df = df.with_columns([
+        pl.col("started_at_dt").dt.convert_time_zone("US/Eastern").alias("est"),
+        pl.col("start_station_name").fill_null("Unknown").cast(pl.Utf8),
+    ])
 
-    df['start_station_name'] = df['start_station_name'].fillna('Unknown')
-    df['end_station_name'] = df['end_station_name'].fillna('Unknown')
-    df['start_station_id'] = df['start_station_id'].fillna('-1').astype(str)
-    df['end_station_id'] = df['end_station_id'].fillna('-1').astype(str)
+    df = df.with_columns([
+        pl.col("est").dt.truncate("1h").alias("start_hour")
+    ])
 
-    df['rideable_type'] = df['rideable_type'].astype('category')
-    df['member_casual'] = df['member_casual'].astype('category')
+    grouped = df.groupby(["start_station_name", "start_hour"]).agg([
+        pl.count().alias("trip_count")
+    ])
 
-    df['ride_duration_mins'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
-    df = df[df['ride_duration_mins'] > 0]
+    print(f"📊 Aggregated {grouped.shape[0]:,} hourly rows")
+    return grouped
 
-    df['day_of_week'] = df['started_at'].dt.day_name()
-    df['hour_of_day'] = df['started_at'].dt.hour.astype('int32')
-    df['month'] = df['started_at'].dt.month.astype('int32')
+def transform_to_supervised(df, window_size, step_size):
+    print("🧠 Transforming to supervised format...")
+    records = []
 
-    print(f"✅ Cleaned dataset: {df.shape[0]:,} rows × {df.shape[1]} columns")
-    return df
+    for station in df["start_station_name"].unique():
+        station_df = df.filter(pl.col("start_station_name") == station).sort("start_hour")
+        series = station_df.select("trip_count").to_series().to_list()
 
-# ======================= HOPSWORKS =======================
+        for i in range(0, len(series) - window_size, step_size):
+            X = series[i:i+window_size]
+            y_idx = i + window_size
+            if y_idx < len(series):
+                record = {f"lag_{j+1}": X[j] for j in range(window_size)}
+                record["target"] = series[y_idx]
+                record["start_station_name"] = station
+                records.append(record)
 
-def connect_to_hopsworks():
-    print("🔐 Connecting to Hopsworks...")
-    load_dotenv()
-    project = hopsworks.login(
-        project=os.getenv("HOPSWORKS_PROJECT"),
-        api_key_value=os.getenv("HOPSWORKS_API_KEY")
-    )
-    return project.get_feature_store()
-
-def push_to_feature_store(df, fs):
-    print("🚀 Pushing to Hopsworks Feature Store...")
-
-    try:
-        # Delete the entire feature group if it exists
-        fg = fs.get_feature_group("citi_bike_trips", version=1)
-        fg.delete()
-        print("🗑️ Existing feature group deleted.")
-    except Exception as e:
-        print(f"ℹ️ Feature group does not exist or could not be deleted: {e}")
-
-    # Recreate feature group
-    fg = fs.create_feature_group(
-        name="citi_bike_trips",
-        version=1,
-        description="Citi Bike data from top 3 stations in last 12 months",
-        primary_key=["ride_id"],
-        event_time="started_at"
-    )
-
-    fg.insert(df, write_options={"wait_for_job": True})
-    print("✅ Feature group created and data inserted.")
-
-
-# ======================= MAIN =======================
+    out = pl.DataFrame(records)
+    print(f"✅ Transformed shape: {out.shape}")
+    return out
 
 def main():
+    start_all = time.time()
+
     if os.path.exists(TEMP_FOLDER):
         shutil.rmtree(TEMP_FOLDER)
     os.makedirs(TEMP_FOLDER, exist_ok=True)
 
-    months = get_last_12_months_est()
-    print("🚀 Starting download + extraction...")
-
-    for ym in months:
+    print("🚀 Downloading + extracting data...")
+    for ym in get_last_12_months_est():
         zip_mem = download_zip_to_memory(ym)
         if zip_mem:
             extract_all_csvs(zip_mem, TEMP_FOLDER)
 
     all_csvs = flatten_csvs_folder(TEMP_FOLDER)
+    print(f"📂 Total CSVs: {len(all_csvs)}")
     if not all_csvs:
-        print("❌ No CSV files found.")
+        print("❌ No CSVs found.")
         return
 
-    print("\n🔍 Counting top 3 stations...")
     top3 = get_top3_station_names(all_csvs)
     print(f"🏆 Top 3 Stations: {top3}")
 
-    print("\n📤 Writing filtered data...")
+    print("📥 Filtering and writing...")
     write_top3_data(all_csvs, top3)
 
-    if not os.path.exists(OUTPUT_FILE) or os.path.getsize(OUTPUT_FILE) == 0:
-        print(f"❌ ERROR: No data written to {OUTPUT_FILE}. Check filtering logic or raw data.")
-        return
-
-    print(f"✅ Output written to `{OUTPUT_FILE}`")
-
-    print("\n🧹 Cleaning up temp files...")
+    print("🧹 Cleaning up...")
     shutil.rmtree(TEMP_FOLDER)
-    print("✅ Temp folder deleted.")
 
-    df = clean_and_engineer_features(OUTPUT_FILE)
-    fs = connect_to_hopsworks()
-    push_to_feature_store(df, fs)
+    hourly_df = clean_and_aggregate(OUTPUT_FILE)
+    supervised_df = transform_to_supervised(hourly_df, WINDOW_SIZE, STEP_SIZE)
+    supervised_df.write_parquet(PARQUET_OUTPUT)
+    print(f"💾 Saved to: {PARQUET_OUTPUT}")
+    print(f"📊 Final rows: {supervised_df.shape[0]:,}")
+    print(f"⏱️ Total time: {time.time() - start_all:.2f} sec")
 
 if __name__ == "__main__":
     main()

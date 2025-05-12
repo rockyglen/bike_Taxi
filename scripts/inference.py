@@ -18,84 +18,78 @@ fs = project.get_feature_store()
 mr = project.get_model_registry()
 
 # -----------------------------
-# 2. Load and aggregate trip data
+# 2. Load trip data
 # -----------------------------
 fg = fs.get_feature_group("citi_bike_trips", version=1)
 df = fg.read()
 
-# FIX: Handle timezone conversion safely
-df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')  # ensure datetime
-df['started_at'] = df['started_at'].dt.tz_localize('UTC')             # treat as UTC
-df['started_at_eastern'] = df['started_at'].dt.tz_convert('US/Eastern')  # convert to Eastern
-df['start_hour'] = df['started_at_eastern'].dt.floor('H')             # floor to the hour
+df['start_hour'] = pd.to_datetime(df['start_hour'])
+df = df.sort_values(['start_station_name', 'start_hour'])
 
-hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
-hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
+# Get top 3 stations
+top3_stations = df['start_station_name'].value_counts().nlargest(3).index.tolist()
 
 # -----------------------------
-# 3. Align to current EST time
+# 3. Prediction block
 # -----------------------------
 eastern = pytz.timezone("US/Eastern")
 now_est = datetime.now(eastern).replace(minute=0, second=0, microsecond=0)
 
-# Get the last 28 hours of actual data (before "now")
-cutoff_time = now_est - timedelta(hours=1)
-lag_rows = hourly_df[hourly_df['start_hour'] <= cutoff_time].tail(28)
+all_predictions = []
 
-if lag_rows.shape[0] < 28:
-    raise ValueError("Not enough lag data to predict from current time.")
+for station in top3_stations:
+    print(f"🔮 Predicting for station: {station}")
+    
+    station_df = df[df['start_station_name'] == station].copy()
+    station_df = station_df[station_df['start_hour'] <= now_est - timedelta(hours=1)]
+    station_df = station_df.sort_values('start_hour')
+    
+    lag_series = station_df['trip_count'].tail(28)
+    
+    if lag_series.shape[0] < 28:
+        print(f"⚠️ Skipping {station}: not enough lag data.")
+        continue
 
-lag_values = lag_rows['trip_count'].tolist()
-current_hour = now_est  # start predicting from the next hour in EST
+    lag_values = lag_series.tolist()
+    current_hour = now_est
 
-# -----------------------------
-# 4. Load latest model
-# -----------------------------
-models = mr.get_models("citi_bike_lgbm_full")
-latest_model = sorted(models, key=lambda m: m.version)[-1]
-model_dir = latest_model.download()
-model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
+    # -----------------------------
+    # Load latest station-specific model
+    # -----------------------------
+    model_name = f"citi_bike_lgbm_{station.replace(' ', '_').lower()}"
+    models = mr.get_models(model_name)
+    if not models:
+        print(f"⚠️ No model found for {station}. Skipping.")
+        continue
 
-# -----------------------------
-# 5. Predict next 168 hours
-# -----------------------------
-predictions = []
-for _ in range(168):
-    X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
-    prediction = model.predict(X_input)[0]
-    current_hour += timedelta(hours=1)
+    latest_model = sorted(models, key=lambda m: m.version)[-1]
+    model_dir = latest_model.download()
+    model = lgb.Booster(model_file=os.path.join(model_dir, "model.txt"))
 
-    predictions.append({
-        'prediction_time': datetime.now(eastern),
-        'target_hour': current_hour,
-        'predicted_trip_count': prediction
-    })
-    lag_values.append(prediction)
+    # -----------------------------
+    # Predict next 168 hours
+    # -----------------------------
+    for _ in range(168):
+        X_input = pd.DataFrame([lag_values[-28:]], columns=[f'lag_{i}' for i in range(1, 29)])
+        prediction = model.predict(X_input)[0]
+        current_hour += timedelta(hours=1)
 
-print(f"📈 Predicted trip count for next 168 hours starting from {predictions[0]['target_hour']}:")
-for p in predictions:
-    print(f"{p['target_hour']}: {p['predicted_trip_count']:.2f}")
-
-# -----------------------------
-# 6. Duplicate predictions for top 3 stations
-# -----------------------------
-top_stations = df['start_station_name'].value_counts().nlargest(3).index.tolist()
-
-extended_predictions = []
-for station in top_stations:
-    for record in predictions:
-        extended_predictions.append({
-            'prediction_time': record['prediction_time'],
-            'target_hour': record['target_hour'],
-            'predicted_trip_count': record['predicted_trip_count'],
+        all_predictions.append({
+            'prediction_time': datetime.now(eastern),
+            'target_hour': current_hour,
+            'predicted_trip_count': prediction,
             'start_station_name': station
         })
-
-pred_df = pd.DataFrame(extended_predictions)
+        lag_values.append(prediction)
 
 # -----------------------------
-# 7. Log predictions to feature store (delete old + insert new)
+# 4. Insert into Hopsworks
 # -----------------------------
+pred_df = pd.DataFrame(all_predictions)
+
+if pred_df.empty:
+    raise RuntimeError("❌ No predictions were made. Check lag data or model availability.")
+
 pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
     version=2,
@@ -103,11 +97,5 @@ pred_fg = fs.get_or_create_feature_group(
     description="Predicted Citi Bike trips for next 168 hours by top 3 stations"
 )
 
-# 💣 Delete existing records up to current time (in EST)
-pred_fg.delete_records(
-    pred_fg.feature("prediction_time") <= now_est
-)
-
-# ✅ Insert new predictions
-pred_fg.insert(pred_df)
-print("✅ 168-hour predictions (duplicated for top 3 stations) logged to Hopsworks.")
+pred_fg.insert(pred_df, overwrite=True)
+print("✅ Per-station predictions logged to Hopsworks.")
