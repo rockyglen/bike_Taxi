@@ -71,20 +71,34 @@ def load_actuals():
     actual_df = df.groupby("start_hour").size().reset_index(name="actual_trip_count")
     return actual_df.sort_values("start_hour")
 
+# -----------------------------
+# 📊 Load & Preview Data
+# -----------------------------
 pred_df = load_predictions()
 actual_df = load_actuals()
 
 # -----------------------------
-# 🔍 Debug Timestamp Alignment
+# 🧪 Timestamp Diagnostics
 # -----------------------------
-st.subheader("⏱ Timestamp Debug (last 5 rows)")
-st.write("**Prediction `target_hour` (tail):**", pred_df["target_hour"].astype(str).tail())
-st.write("**Actual `start_hour` (tail):**", actual_df["start_hour"].astype(str).tail())
+st.subheader("🔍 Timestamp Alignment Diagnostics")
+
+st.markdown("**Prediction Range:**")
+st.write(f"Start: `{pred_df['target_hour'].min()}`")
+st.write(f"End:   `{pred_df['target_hour'].max()}`")
+
+st.markdown("**Actual Range:**")
+st.write(f"Start: `{actual_df['start_hour'].min()}`")
+st.write(f"End:   `{actual_df['start_hour'].max()}`")
+
+st.markdown("**Last 5 Prediction Rows:**")
+st.dataframe(pred_df[["target_hour"]].tail())
+
+st.markdown("**Last 5 Actual Rows:**")
+st.dataframe(actual_df[["start_hour"]].tail())
 
 # -----------------------------
 # 🤝 Merge Predictions + Actuals
 # -----------------------------
-# Try exact merge
 merged = pd.merge(
     pred_df,
     actual_df,
@@ -93,7 +107,7 @@ merged = pd.merge(
     how="inner"
 )
 
-# If merge failed, try fuzzy fallback
+# Fallback to fuzzy merge
 if merged.empty:
     st.warning("⚠️ Exact merge failed. Trying fuzzy merge with 1-minute tolerance...")
     merged = pd.merge_asof(
@@ -105,17 +119,21 @@ if merged.empty:
         direction="nearest"
     ).dropna()
 
+# If still no overlap, stop
 if merged.empty:
     st.error("❌ No overlapping prediction and actual data found. Check timestamps and feature groups.")
     st.stop()
 
+# -----------------------------
+# 📊 Data Prep
+# -----------------------------
 merged = merged[["target_hour", "predicted_trip_count", "actual_trip_count"]]
 merged["error"] = merged["predicted_trip_count"] - merged["actual_trip_count"]
 merged["abs_error"] = merged["error"].abs()
 merged["hour"] = merged["target_hour"].dt.strftime("%Y-%m-%d %H:%M")
 
 # -----------------------------
-# 📊 Metrics
+# 📈 Metrics
 # -----------------------------
 mae = mean_absolute_error(merged["actual_trip_count"], merged["predicted_trip_count"])
 max_error_hour = merged.iloc[merged["abs_error"].idxmax()]["hour"]
@@ -127,9 +145,9 @@ col2.metric("Max Error Hour", max_error_hour)
 col3.metric("Max Absolute Error", f"{int(max_abs_error)}")
 
 # -----------------------------
-# 📈 Forecast vs Actual Plot
+# 📉 Line Chart
 # -----------------------------
-st.subheader("📉 Prediction vs. Actual (US/Eastern)")
+st.subheader("📉 Prediction vs. Actuals (US/Eastern)")
 
 chart = alt.Chart(merged).transform_fold(
     ["predicted_trip_count", "actual_trip_count"],
@@ -144,7 +162,7 @@ chart = alt.Chart(merged).transform_fold(
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# 🧪 Error Histogram
+# 📊 Error Histogram
 # -----------------------------
 st.subheader("🧪 Absolute Error Distribution")
 
@@ -163,7 +181,7 @@ with st.expander("🔍 View Merged Data Table"):
     st.dataframe(merged, use_container_width=True)
 
 # -----------------------------
-# ✅ Footer
+# 🧭 Footer
 # -----------------------------
 st.markdown("---")
-st.markdown("Built with ❤️ using Streamlit + Hopsworks + Altair. All times shown in **US/Eastern**.")
+st.markdown("Built with ❤️ using Streamlit + Hopsworks + Altair. All timestamps shown in **US/Eastern**.")
