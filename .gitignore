@@ -112,4 +112,4 @@ dist/
 
 *.csv
 
-/model_lags
+.model_lags/
