@@ -71,6 +71,9 @@ def load_actuals():
     actual_df = df.groupby("start_hour").size().reset_index(name="actual_trip_count")
     return actual_df.sort_values("start_hour")
 
+# -----------------------------
+# 🔁 Load & shift predictions
+# -----------------------------
 pred_df = load_predictions()
 actual_df = load_actuals()
 
@@ -93,29 +96,25 @@ st.markdown("**Actuals tail:**")
 st.dataframe(actual_df[["start_hour"]].tail())
 
 # -----------------------------
-# 🔁 Shift prediction window back to align if needed
-# -----------------------------
-pred_df["target_hour_adj"] = pred_df["target_hour"] - pd.Timedelta(hours=1)
-
-# -----------------------------
-# 🤝 Try merge with adjusted prediction timestamps
+# 🤝 Merge using shifted prediction window
 # -----------------------------
 merged = pd.merge(
-    pred_df.rename(columns={"target_hour_adj": "target_hour"}),
+    pred_df.assign(target_hour_shifted=pred_df["target_hour"] - pd.Timedelta(hours=1)),
     actual_df,
-    left_on="target_hour",
+    left_on="target_hour_shifted",
     right_on="start_hour",
     how="inner"
 )
 
 if merged.empty:
-    st.error("❌ Still no overlapping data, even after backshift. Check your ingestion timestamps.")
+    st.error("❌ Still no overlapping data, even after backshift. Check timestamps and ingestion delays.")
     st.stop()
 
 # -----------------------------
-# 📊 Data Prep
+# 🧹 Prepare merged result
 # -----------------------------
-merged = merged[["target_hour", "predicted_trip_count", "actual_trip_count"]]
+merged = merged[["target_hour_shifted", "predicted_trip_count", "actual_trip_count"]]
+merged.rename(columns={"target_hour_shifted": "target_hour"}, inplace=True)
 merged["error"] = merged["predicted_trip_count"] - merged["actual_trip_count"]
 merged["abs_error"] = merged["error"].abs()
 merged["hour"] = merged["target_hour"].dt.strftime("%Y-%m-%d %H:%M")
