@@ -1,11 +1,11 @@
 """
 feature_engineering_parallel.py
 
-Fast + RAM-optimized pipeline:
-- Parallel download + extraction
-- Per-month DataFrame processing
-- Disk streaming to output CSV
-- Schema-aligned Hopsworks upload
+Fast + RAM-safe pipeline:
+- Parallel ZIP download
+- Per-month processing
+- Streams cleaned rows to CSV
+- Uploads to Hopsworks with correct schema
 """
 
 import os
@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 import hopsworks
 
-# === Config ===
+# === CONFIG ===
 TEMP_FOLDER = "tripdata_temp"
 OUTPUT_FILE = "top3_stations_output.csv"
 MAX_THREADS = 4
@@ -40,13 +40,13 @@ DTYPE_OVERRIDES = {
     "end_station_id": "str"
 }
 
-# === Step 1: Utility ===
-
+# === TIME UTILS ===
 def get_last_12_months_est():
     eastern = pytz.timezone("US/Eastern")
     now_est = datetime.now(eastern)
     return [(now_est - relativedelta(months=i + 1)).strftime('%Y%m') for i in range(12)]
 
+# === DOWNLOAD + EXTRACT ===
 def download_and_extract(ym):
     os.makedirs(TEMP_FOLDER, exist_ok=True)
     base_url = "https://s3.amazonaws.com/tripdata/"
@@ -70,8 +70,7 @@ def download_and_extract(ym):
             print(f"❌ Failed for {fname}: {e}")
     return []
 
-# === Step 2: Identify Top 3 Stations ===
-
+# === TOP STATION ID DETECTION ===
 def build_top3_station_counter(months):
     counter = Counter()
     for ym in months:
@@ -85,8 +84,7 @@ def build_top3_station_counter(months):
             os.remove(file)
     return [s for s, _ in counter.most_common(3)]
 
-# === Step 3: Per-Month Processing ===
-
+# === PER-MONTH CLEANING + TO CSV ===
 def process_month(ym, top3_ids):
     files = download_and_extract(ym)
     for file in files:
@@ -106,13 +104,16 @@ def process_month(ym, top3_ids):
             df["day_of_week"] = df["started_at"].dt.dayofweek.astype(str)
             df["month"] = df["started_at"].dt.month
 
+            # Ensure consistent dtypes before saving
+            df["start_station_id"] = df["start_station_id"].astype(str)
+            df["end_station_id"] = df["end_station_id"].astype(str)
+
             df.to_csv(OUTPUT_FILE, mode="a", index=False, header=not os.path.exists(OUTPUT_FILE))
         except Exception as e:
             print(f"⚠️ Failed to process {file}: {e}")
         os.remove(file)
 
-# === Step 4: Upload to Hopsworks ===
-
+# === HOPSWORKS UPLOAD ===
 def upload_to_hopsworks():
     load_dotenv()
     project = hopsworks.login(
@@ -120,7 +121,13 @@ def upload_to_hopsworks():
         project=os.getenv("HOPSWORKS_PROJECT")
     )
     fs = project.get_feature_store()
-    df = pd.read_csv(OUTPUT_FILE)
+
+    # Re-load final CSV with explicit schema
+    df = pd.read_csv(OUTPUT_FILE, dtype={
+        "start_station_id": "str",
+        "end_station_id": "str",
+        "day_of_week": "str"
+    }, low_memory=False)
 
     df["start_hour"] = pd.to_datetime(df["start_hour"])
     df["day_of_week"] = df["day_of_week"].astype(str)
@@ -136,8 +143,7 @@ def upload_to_hopsworks():
     fg.insert(df, write_options={"wait_for_job": True})
     print("✅ Uploaded to Hopsworks")
 
-# === Main ===
-
+# === MAIN ===
 if __name__ == "__main__":
     months = get_last_12_months_est()
     print("🔍 Identifying top 3 stations...")
