@@ -1,11 +1,11 @@
 """
 feature_engineering_parallel.py
 
-Fast + RAM-safe pipeline:
-- Parallel ZIP download
-- Per-month processing
-- Streams cleaned rows to CSV
-- Uploads to Hopsworks with correct schema
+Fast + RAM-safe Citi Bike pipeline:
+- Parallel download & unzip
+- Per-month processing (top 3 stations)
+- Stream to CSV to save RAM
+- Upload to Hopsworks with correct schema
 """
 
 import os
@@ -40,13 +40,13 @@ DTYPE_OVERRIDES = {
     "end_station_id": "str"
 }
 
-# === TIME UTILS ===
+# === UTILITIES ===
+
 def get_last_12_months_est():
     eastern = pytz.timezone("US/Eastern")
     now_est = datetime.now(eastern)
     return [(now_est - relativedelta(months=i + 1)).strftime('%Y%m') for i in range(12)]
 
-# === DOWNLOAD + EXTRACT ===
 def download_and_extract(ym):
     os.makedirs(TEMP_FOLDER, exist_ok=True)
     base_url = "https://s3.amazonaws.com/tripdata/"
@@ -70,7 +70,8 @@ def download_and_extract(ym):
             print(f"❌ Failed for {fname}: {e}")
     return []
 
-# === TOP STATION ID DETECTION ===
+# === STATION FREQUENCY ===
+
 def build_top3_station_counter(months):
     counter = Counter()
     for ym in months:
@@ -84,7 +85,8 @@ def build_top3_station_counter(months):
             os.remove(file)
     return [s for s, _ in counter.most_common(3)]
 
-# === PER-MONTH CLEANING + TO CSV ===
+# === MONTHLY PROCESSING ===
+
 def process_month(ym, top3_ids):
     files = download_and_extract(ym)
     for file in files:
@@ -100,11 +102,11 @@ def process_month(ym, top3_ids):
             df = df[df["ride_duration_mins"] > 0]
 
             df["start_hour"] = df["started_at"].dt.floor("H")
-            df["hour_of_day"] = df["started_at"].dt.hour
+            df["hour_of_day"] = df["started_at"].dt.hour.astype("int32")
             df["day_of_week"] = df["started_at"].dt.dayofweek.astype(str)
-            df["month"] = df["started_at"].dt.month
+            df["month"] = df["started_at"].dt.month.astype("int32")
 
-            # Ensure consistent dtypes before saving
+            # Ensure IDs are strings
             df["start_station_id"] = df["start_station_id"].astype(str)
             df["end_station_id"] = df["end_station_id"].astype(str)
 
@@ -113,7 +115,8 @@ def process_month(ym, top3_ids):
             print(f"⚠️ Failed to process {file}: {e}")
         os.remove(file)
 
-# === HOPSWORKS UPLOAD ===
+# === UPLOAD TO HOPSWORKS ===
+
 def upload_to_hopsworks():
     load_dotenv()
     project = hopsworks.login(
@@ -122,28 +125,36 @@ def upload_to_hopsworks():
     )
     fs = project.get_feature_store()
 
-    # Re-load final CSV with explicit schema
     df = pd.read_csv(OUTPUT_FILE, dtype={
+        "ride_id": "str",
+        "rideable_type": "str",
         "start_station_id": "str",
         "end_station_id": "str",
+        "start_station_name": "str",
+        "end_station_name": "str",
+        "member_casual": "str",
         "day_of_week": "str"
     }, low_memory=False)
 
     df["start_hour"] = pd.to_datetime(df["start_hour"])
-    df["day_of_week"] = df["day_of_week"].astype(str)
+    df["started_at"] = pd.to_datetime(df["started_at"])
+    df["ended_at"] = pd.to_datetime(df["ended_at"])
+    df["hour_of_day"] = df["hour_of_day"].astype("int32")
+    df["month"] = df["month"].astype("int32")
 
     fg = fs.get_or_create_feature_group(
         name="citi_bike_trips",
         version=1,
         primary_key=["ride_id"],
-        description="Top 3 Citi Bike stations - Fast RAM-safe pipeline",
-        event_time="start_hour"
+        event_time="start_hour",
+        description="Top 3 Citi Bike stations - fast and type-safe"
     )
 
     fg.insert(df, write_options={"wait_for_job": True})
-    print("✅ Uploaded to Hopsworks")
+    print("✅ Upload to Hopsworks successful.")
 
-# === MAIN ===
+# === MAIN EXECUTION ===
+
 if __name__ == "__main__":
     months = get_last_12_months_est()
     print("🔍 Identifying top 3 stations...")
