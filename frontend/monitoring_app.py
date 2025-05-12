@@ -36,9 +36,10 @@ fs = connect_to_hopsworks()
 def load_predictions():
     fg = fs.get_feature_group("citi_bike_predictions", version=3)
     df = fg.read()
-    df["target_hour"] = pd.to_datetime(df["target_hour"])
+    df["target_hour"] = pd.to_datetime(df["target_hour"]).dt.floor("H")
     df["prediction_time"] = pd.to_datetime(df["prediction_time"])
     df["predicted_trip_count"] = df["predicted_trip_count"].astype("float32")
+    df["target_hour"] = df["target_hour"].dt.tz_localize("UTC")  # force UTC
     return df.sort_values("target_hour")
 
 # -----------------------------
@@ -49,6 +50,7 @@ def load_actuals():
     fg = fs.get_feature_group("citi_bike_trips", version=1)
     df = fg.read()
     df["start_hour"] = pd.to_datetime(df["started_at"]).dt.floor("H")
+    df["start_hour"] = df["start_hour"].dt.tz_localize("UTC")  # force UTC
     actual_df = df.groupby("start_hour").size().reset_index(name="actual_trip_count")
     return actual_df.sort_values("start_hour")
 
@@ -70,6 +72,13 @@ merged = merged[["target_hour", "predicted_trip_count", "actual_trip_count"]]
 merged["error"] = merged["predicted_trip_count"] - merged["actual_trip_count"]
 merged["abs_error"] = merged["error"].abs()
 merged["hour"] = merged["target_hour"].dt.strftime("%Y-%m-%d %H:%M")
+
+# -----------------------------
+# Empty Check
+# -----------------------------
+if merged.empty:
+    st.warning("❌ No overlapping prediction and actual data found. Check timestamp alignment.")
+    st.stop()
 
 # -----------------------------
 # Metrics
