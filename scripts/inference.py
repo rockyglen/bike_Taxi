@@ -78,19 +78,29 @@ pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
 pred_df['predicted_trip_count'] = pred_df['predicted_trip_count'].astype("float32")
 
 # -----------------------------
-# 7. Log to Hopsworks (overwrite mode)
+# 7. Log to Hopsworks (overwrite next 24h only)
 # -----------------------------
 pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
-    version=3,  # updated version without station-level detail
+    version=3,
     primary_key=["prediction_time", "target_hour"],
     description="24-hour Citi Bike trip predictions (no station split)",
     event_time="prediction_time"
 )
 
-# ❌ Clear any existing data to overwrite safely
-pred_fg.delete_all()
+# ⚠️ Remove any rows with the same target_hour values before insert
+existing_df = pred_fg.read()
+if not existing_df.empty:
+    rows_to_delete = existing_df[existing_df["target_hour"].isin(pred_df["target_hour"])]
+    for _, row in rows_to_delete.iterrows():
+        try:
+            pred_fg.delete_record({
+                "prediction_time": row["prediction_time"],
+                "target_hour": row["target_hour"]
+            })
+        except Exception as e:
+            print(f"⚠️ Failed to delete existing row: {e}")
 
-# ✅ Insert fresh predictions
+# ✅ Insert updated predictions
 pred_fg.insert(pred_df, write_options={"wait_for_job": True})
-print("✅ 24-hour predictions logged to Hopsworks (overwritten).")
+print("✅ 24-hour predictions logged to Hopsworks (duplicates removed).")
