@@ -78,7 +78,7 @@ pred_df['target_hour'] = pd.to_datetime(pred_df['target_hour'])
 pred_df['predicted_trip_count'] = pred_df['predicted_trip_count'].astype("float32")
 
 # -----------------------------
-# 7. Log to Hopsworks
+# 7. Log to Hopsworks (overwrite mode)
 # -----------------------------
 pred_fg = fs.get_or_create_feature_group(
     name="citi_bike_predictions",
@@ -88,5 +88,9 @@ pred_fg = fs.get_or_create_feature_group(
     event_time="prediction_time"
 )
 
+# ❌ Clear any existing data to overwrite safely
+pred_fg.delete_all()
+
+# ✅ Insert fresh predictions
 pred_fg.insert(pred_df, write_options={"wait_for_job": True})
-print("✅ 24-hour predictions logged to Hopsworks.")
+print("✅ 24-hour predictions logged to Hopsworks (overwritten).")

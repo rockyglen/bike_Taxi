@@ -27,7 +27,7 @@ project = init_hopsworks_connection()
 fs = project.get_feature_store()
 
 # -----------------------------
-# 📦 Load prediction feature group (filter to next 24h from now in EST)
+# 📦 Load prediction feature group (EXACT next 24 hours only)
 # -----------------------------
 @st.cache_data(ttl=1800)
 def load_latest_predictions():
@@ -47,12 +47,19 @@ def load_latest_predictions():
         df["prediction_time"] = df["prediction_time"].dt.tz_localize("UTC")
     df["prediction_time"] = df["prediction_time"].dt.tz_convert("US/Eastern")
 
-    # 🔥 Filter for next 24 hours from current US/Eastern time
+    # 🔥 Filter for next 24 hours
     now_est = datetime.now(pytz.timezone("US/Eastern")).replace(minute=0, second=0, microsecond=0)
     future_24h = now_est + timedelta(hours=24)
     df = df[(df["target_hour"] >= now_est) & (df["target_hour"] < future_24h)]
 
-    return df.sort_values("target_hour")
+    # Generate full 24-hour window
+    all_hours = pd.date_range(start=now_est, end=future_24h - timedelta(hours=1), freq="H", tz="US/Eastern")
+    full_df = pd.DataFrame({"target_hour": all_hours})
+
+    # Merge to guarantee 24 hourly slots, even if missing in prediction
+    merged = full_df.merge(df, on="target_hour", how="left")
+
+    return merged.sort_values("target_hour")
 
 pred_df = load_latest_predictions()
 
@@ -61,7 +68,8 @@ pred_df = load_latest_predictions()
 # -----------------------------
 st.title("🚲 Citi Bike Trip Prediction Dashboard")
 st.markdown(f"""
-This dashboard shows predicted Citi Bike trip counts for the next 24 hours  
+This dashboard shows **only the predicted Citi Bike trip counts for the next 24 hours**,  
+starting from **{pred_df['target_hour'].min().strftime('%Y-%m-%d %I:%M %p')} EST**  
 (all timestamps shown in **US/Eastern** timezone).
 """)
 
@@ -96,17 +104,26 @@ with col1:
     st.metric("Total Trips (24h)", f"{int(total_trips):,}")
 
 with col2:
-    peak_hour = pred_df.loc[pred_df["predicted_trip_count"].idxmax()]["target_hour"]
-    st.metric("Peak Hour (EST)", peak_hour.strftime("%Y-%m-%d %H:%M"))
+    if pred_df["predicted_trip_count"].notna().any():
+        peak_hour = pred_df.loc[pred_df["predicted_trip_count"].idxmax()]["target_hour"]
+        st.metric("Peak Hour (EST)", peak_hour.strftime("%Y-%m-%d %H:%M"))
+    else:
+        st.metric("Peak Hour (EST)", "N/A")
 
 with col3:
-    min_count = pred_df["predicted_trip_count"].min()
-    max_count = pred_df["predicted_trip_count"].max()
-    st.metric("Range", f"{int(min_count)} - {int(max_count)}")
+    if pred_df["predicted_trip_count"].notna().any():
+        min_count = pred_df["predicted_trip_count"].min()
+        max_count = pred_df["predicted_trip_count"].max()
+        st.metric("Range", f"{int(min_count)} - {int(max_count)}")
+    else:
+        st.metric("Range", "N/A")
 
 with col4:
-    ts = pred_df["prediction_time"].max()
-    st.metric("Prediction Timestamp (EST)", ts.strftime("%Y-%m-%d %H:%M:%S"))
+    if pred_df["prediction_time"].notna().any():
+        ts = pred_df["prediction_time"].max()
+        st.metric("Prediction Timestamp (EST)", ts.strftime("%Y-%m-%d %H:%M:%S"))
+    else:
+        st.metric("Prediction Timestamp (EST)", "N/A")
 
 # -----------------------------
 # 🧾 Data Table
