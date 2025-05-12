@@ -81,13 +81,18 @@ def extract_csvs_from_zip(zip_bytes, temp_folder):
 def filter_columns_and_concat(csv_files, target_cols):
     """Read, filter columns, and combine all CSV files."""
     dfs = []
+    dtype_overrides = {
+        "start_station_id": "str",
+        "end_station_id": "str"
+    }
     for file in csv_files:
         try:
-            df = pd.read_csv(file, usecols=target_cols)
+            df = pd.read_csv(file, usecols=target_cols, dtype=dtype_overrides, low_memory=False)
             dfs.append(df)
         except Exception as e:
             print(f"⚠️ Skipped {file}: {e}")
     return pd.concat(dfs, ignore_index=True)
+
 
 def get_top3_start_stations(df):
     """Identify top 3 most frequent start_station_id."""
