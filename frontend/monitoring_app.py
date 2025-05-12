@@ -3,7 +3,7 @@ import pandas as pd
 import hopsworks
 import streamlit as st
 import altair as alt
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from sklearn.metrics import mean_absolute_error
 
@@ -71,9 +71,6 @@ def load_actuals():
     actual_df = df.groupby("start_hour").size().reset_index(name="actual_trip_count")
     return actual_df.sort_values("start_hour")
 
-# -----------------------------
-# 📊 Load & Preview Data
-# -----------------------------
 pred_df = load_predictions()
 actual_df = load_actuals()
 
@@ -81,47 +78,38 @@ actual_df = load_actuals()
 # 🧪 Timestamp Diagnostics
 # -----------------------------
 st.subheader("🔍 Timestamp Alignment Diagnostics")
+st.code(f"""
+Prediction Start: {pred_df['target_hour'].min()}
+Prediction End:   {pred_df['target_hour'].max()}
 
-st.markdown("**Prediction Range:**")
-st.write(f"Start: `{pred_df['target_hour'].min()}`")
-st.write(f"End:   `{pred_df['target_hour'].max()}`")
+Actual Start:     {actual_df['start_hour'].min()}
+Actual End:       {actual_df['start_hour'].max()}
+""")
 
-st.markdown("**Actual Range:**")
-st.write(f"Start: `{actual_df['start_hour'].min()}`")
-st.write(f"End:   `{actual_df['start_hour'].max()}`")
-
-st.markdown("**Last 5 Prediction Rows:**")
+st.markdown("**Prediction tail:**")
 st.dataframe(pred_df[["target_hour"]].tail())
 
-st.markdown("**Last 5 Actual Rows:**")
+st.markdown("**Actuals tail:**")
 st.dataframe(actual_df[["start_hour"]].tail())
 
 # -----------------------------
-# 🤝 Merge Predictions + Actuals
+# 🔁 Shift prediction window back to align if needed
+# -----------------------------
+pred_df["target_hour_adj"] = pred_df["target_hour"] - pd.Timedelta(hours=1)
+
+# -----------------------------
+# 🤝 Try merge with adjusted prediction timestamps
 # -----------------------------
 merged = pd.merge(
-    pred_df,
+    pred_df.rename(columns={"target_hour_adj": "target_hour"}),
     actual_df,
     left_on="target_hour",
     right_on="start_hour",
     how="inner"
 )
 
-# Fallback to fuzzy merge
 if merged.empty:
-    st.warning("⚠️ Exact merge failed. Trying fuzzy merge with 1-minute tolerance...")
-    merged = pd.merge_asof(
-        pred_df.sort_values("target_hour"),
-        actual_df.sort_values("start_hour"),
-        left_on="target_hour",
-        right_on="start_hour",
-        tolerance=pd.Timedelta("1min"),
-        direction="nearest"
-    ).dropna()
-
-# If still no overlap, stop
-if merged.empty:
-    st.error("❌ No overlapping prediction and actual data found. Check timestamps and feature groups.")
+    st.error("❌ Still no overlapping data, even after backshift. Check your ingestion timestamps.")
     st.stop()
 
 # -----------------------------
@@ -162,7 +150,7 @@ chart = alt.Chart(merged).transform_fold(
 st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------
-# 📊 Error Histogram
+# 🧪 Error Histogram
 # -----------------------------
 st.subheader("🧪 Absolute Error Distribution")
 
