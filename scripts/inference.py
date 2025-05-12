@@ -22,7 +22,12 @@ mr = project.get_model_registry()
 # -----------------------------
 fg = fs.get_feature_group("citi_bike_trips", version=1)
 df = fg.read()
-df['start_hour'] = pd.to_datetime(df['started_at']).dt.tz_convert("US/Eastern").dt.floor('H')
+
+# FIX: Handle timezone conversion safely
+df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')  # ensure datetime
+df['started_at'] = df['started_at'].dt.tz_localize('UTC')             # treat as UTC
+df['started_at_eastern'] = df['started_at'].dt.tz_convert('US/Eastern')  # convert to Eastern
+df['start_hour'] = df['started_at_eastern'].dt.floor('H')             # floor to the hour
 
 hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
 hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
