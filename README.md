@@ -13,12 +13,9 @@ This project forecasts hourly Citi Bike usage at the busiest stations in New Yor
   - CI/CD integration with GitHub Actions
   - Feature versioning and retrieval with Hopsworks
 
----
 
 
----
-
-## ⚙️ Pipeline Components
+## Pipeline Components
 
 ### Data Engineering
 
@@ -68,5 +65,22 @@ This project forecasts hourly Citi Bike usage at the busiest stations in New Yor
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/bike_Taxi.git
+git clone https://github.com/rockyglen/bike_Taxi.git
 cd bike_Taxi
+```
+### 2. Set Up Environment
+Using Conda:
+```bash
+conda env create -f model_lags/conda.yaml
+conda activate bike_taxi_env
+```
+Or using pip:
+```bash
+pip install -r requirements.txt
+```
+### 3. Launch the Streamlit App
+
+```bash
+streamlit run frontend/streamlit_app.py
+```
+
