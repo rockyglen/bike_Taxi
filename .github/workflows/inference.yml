@@ -1,34 +1,27 @@
-name: Inference Pipeline
+name: Inference Pipeline (Hourly Predictions)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'  # every hour
+    - cron: '0 * * * *'  # Run every hour
 
 jobs:
-  run_inference:
+  hourly_predictions:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v5
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Run inference
+    - name: Run inference script
       env:
-        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
-        HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
-        DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
-        DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
-        DAGSHUB_REPO_NAME: ${{ secrets.DAGSHUB_REPO_NAME }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       run: |
-        python scripts/inference.py
+        uv run scripts/inference.py

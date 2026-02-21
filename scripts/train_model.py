@@ -1,102 +1,163 @@
+"""
+train_model.py
+
+Advanced MLOps Pipeline:
+1. Data Source: AWS S3 (Parquet).
+2. Data Drift: Evidently AI (Reference vs. Current).
+3. Challenger vs. Champion: Automated model promotion based on MAE.
+4. Logging: MLflow (Tracking) + S3 (Production Weights).
+"""
+
 import os
+from datetime import datetime
 import pandas as pd
 import lightgbm as lgb
 import mlflow
 import mlflow.lightgbm
-import hopsworks
+import boto3
 import shutil
 import uuid
-from sklearn.metrics import mean_absolute_error
+import joblib
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from dotenv import load_dotenv
 
-# -----------------------------
-# 🔐 Load environment variables
-# -----------------------------
+# Evidently AI for Drift
+from evidently.report import Report
+from evidently.metric_preset import DataDriftPreset, TargetDriftPreset
+
+# === CONFIG & LOAD ENV ===
 load_dotenv()
+DATA_FOLDER = "data"
+os.makedirs(DATA_FOLDER, exist_ok=True)
 
-# -----------------------------
-# 🔗 Connect to Hopsworks
-# -----------------------------
-project = hopsworks.login(
-    api_key_value=os.getenv("HOPSWORKS_API_KEY"),
-    project=os.getenv("HOPSWORKS_PROJECT")
-)
-fs = project.get_feature_store()
-mr = project.get_model_registry()
+# === UTILITIES ===
 
-# -----------------------------
-# 📦 Load feature group data
-# -----------------------------
-fg = fs.get_feature_group(name="citi_bike_trips", version=1)
-df = fg.read()
+def download_from_s3(bucket, s3_path, local_path):
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+    )
+    try:
+        s3.download_file(bucket, s3_path, local_path)
+        return local_path
+    except:
+        return None
 
-# -----------------------------
-# 🧹 Preprocess data
-# -----------------------------
-df['start_hour'] = pd.to_datetime(df['started_at'], errors="coerce").dt.floor('H')
-df = df.dropna(subset=['start_hour'])
-hourly_df = df.groupby('start_hour').size().reset_index(name='trip_count')
-hourly_df['hour_of_day'] = hourly_df['start_hour'].dt.hour.astype("int32")
-hourly_df = hourly_df.sort_values('start_hour').reset_index(drop=True)
+def upload_to_s3(local_file, bucket, s3_path):
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+    )
+    s3.upload_file(local_file, bucket, s3_path)
 
-# -----------------------------
-# 🧠 Create lag features
-# -----------------------------
-for lag in range(1, 29):
-    hourly_df[f'lag_{lag}'] = hourly_df['trip_count'].shift(lag).astype("float32")
+def get_rmse(y_true, y_pred):
+    try:
+        from sklearn.metrics import root_mean_squared_error
+        return root_mean_squared_error(y_true, y_pred)
+    except ImportError:
+        from sklearn.metrics import mean_squared_error
+        return mean_squared_error(y_true, y_pred, squared=False)
 
-hourly_df = hourly_df.dropna().reset_index(drop=True)
+def run_drift_report(reference, current):
+    """Generates a data drift report using Evidently AI."""
+    print("📡 Monitoring Data Drift...")
+    drift_report = Report(metrics=[
+        DataDriftPreset(),
+        TargetDriftPreset(),
+    ])
+    
+    # We only check drift on the features used for training
+    drift_report.run(reference_data=reference, current_data=current)
+    
+    report_path = os.path.join(DATA_FOLDER, "drift_report.html")
+    drift_report.save_html(report_path)
+    return report_path, drift_report.as_dict()
 
-# -----------------------------
-# ✂️ Train/Test Split
-# -----------------------------
-split_idx = int(len(hourly_df) * 0.8)
-train = hourly_df.iloc[:split_idx]
-test = hourly_df.iloc[split_idx:]
+def train_and_log():
+    bucket = os.getenv('AWS_S3_BUCKET')
+    s3_feature_path = "citi_bike/forecast_features.parquet"
+    local_feature_path = os.path.join(DATA_FOLDER, "features_for_training.parquet")
+    
+    if not download_from_s3(bucket, s3_feature_path, local_feature_path):
+        print("❌ Features not found on S3.")
+        return
 
-X_train = train[[f'lag_{i}' for i in range(1, 29)]]
-y_train = train['trip_count']
-X_test = test[[f'lag_{i}' for i in range(1, 29)]]
-y_test = test['trip_count']
+    df = pd.read_parquet(local_feature_path)
+    df = df.sort_values('start_hour').reset_index(drop=True)
 
-# -----------------------------
-# 🚀 Train model
-# -----------------------------
-model = lgb.LGBMRegressor(random_state=42)
-model.fit(X_train, y_train)
-preds = model.predict(X_test)
-mae = mean_absolute_error(y_test, preds)
-print(f"🚀 LightGBM (28 lags) MAE: {mae:.2f}")
+    # 1. Split Data for Training and Drift Analysis
+    # Reference: Older 80%, Current: Newest 20%
+    split_idx = int(len(df) * 0.8)
+    train_df = df.iloc[:split_idx]
+    test_df = df.iloc[split_idx:]
 
-# -----------------------------
-# 📝 Log to MLflow
-# -----------------------------
-mlflow.set_tracking_uri(
-    f"https://{os.getenv('DAGSHUB_USERNAME')}:{os.getenv('DAGSHUB_TOKEN')}@dagshub.com/{os.getenv('DAGSHUB_USERNAME')}/{os.getenv('DAGSHUB_REPO_NAME')}.mlflow"
-)
+    lags = [f'lag_{i}' for i in range(1, 29)]
+    categorical = ['hour', 'day_of_week', 'is_weekend']
+    demographics = ['member', 'casual', 'electric_bike', 'classic_bike']
+    features = lags + categorical + demographics
+    target = 'total_trips'
 
-version_tag = str(uuid.uuid4())[:8]
-with mlflow.start_run(run_name="LightGBM_28_Lags"):
-    mlflow.set_tag("version_tag", version_tag)
-    mlflow.log_param("model_type", "LightGBM")
-    mlflow.log_param("lags_used", 28)
-    mlflow.log_param("train_rows", len(train))
-    mlflow.log_param("test_rows", len(test))
-    mlflow.log_metric("MAE", mae)
-    mlflow.lightgbm.log_model(model, artifact_path="model")
+    # 2. DRIFT DETECTION
+    report_html, report_dict = run_drift_report(train_df[features + [target]], test_df[features + [target]])
+    drift_detected = report_dict['metrics'][0]['result']['dataset_drift']
+    print(f"📊 Data Drift Detected: {drift_detected}")
 
-# -----------------------------
-# 🗃️ Register model in Hopsworks
-# -----------------------------
-model_dir = "full_lag_model_dir"
-os.makedirs(model_dir, exist_ok=True)
-model.booster_.save_model(f"{model_dir}/model.txt")
+    # 3. TRAINING (Challenger)
+    print("🚀 Training Challenger Model...")
+    challenger = lgb.LGBMRegressor(n_estimators=1000, learning_rate=0.05, random_state=42)
+    challenger.fit(train_df[features], train_df[target], eval_set=[(test_df[features], test_df[target])])
+    
+    challenger_preds = challenger.predict(test_df[features])
+    challenger_mae = mean_absolute_error(test_df[target], challenger_preds)
+    print(f"🏆 Challenger MAE: {challenger_mae:.4f}")
 
-mr.python.create_model(
-    name="citi_bike_lgbm_full",
-    metrics={"mae": mae},
-    description="LGBM with 28 lag features (clean)"
-).save(model_dir)
+    # 4. DOWNLOAD CHAMPION (Current Production)
+    s3_prod_path = "models/production_model.joblib"
+    local_prod_path = os.path.join(DATA_FOLDER, "champion_model.joblib")
+    champion_mae = float('inf')
+    
+    if download_from_s3(bucket, s3_prod_path, local_prod_path):
+        print("🛡️ Champion found. Evaluating performance...")
+        champion = joblib.load(local_prod_path)
+        champion_preds = champion.predict(test_df[features])
+        champion_mae = mean_absolute_error(test_df[target], champion_preds)
+        print(f"👑 Champion MAE: {champion_mae:.4f}")
+    else:
+        print("🆕 No Champion found in S3. Challenger will be promoted automatically.")
 
-shutil.rmtree(model_dir)
-print("✅ Model training, logging, and registration complete.")
+    # 5. MLFLOW LOGGING
+    mlflow_uri = os.getenv('MLFLOW_TRACKING_URI')
+    if mlflow_uri: mlflow.set_tracking_uri(mlflow_uri)
+
+    with mlflow.start_run(run_name=f"LGBM_Run_{uuid.uuid4().hex[:4]}"):
+        mlflow.log_params({"drift_status": drift_detected, "challenger_mae": challenger_mae, "champion_mae": champion_mae})
+        mlflow.log_metric("MAE", challenger_mae)
+        mlflow.log_metric("Drift_Detected", int(drift_detected))
+        mlflow.log_artifact(report_html, "drift_reports")
+        
+        # 6. PROMOTION LOGIC
+        if challenger_mae < champion_mae:
+            print("🎊 CHALLENGER IS BETTER! Promoting to Production...")
+            joblib.dump(challenger, "production_model.joblib")
+            
+            # 6a. Stable Champion Pointer
+            upload_to_s3("production_model.joblib", bucket, s3_prod_path)
+            
+            # 6b. Timestamped Snapshot (Archive)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            snapshot_path = f"models/archive/model_{timestamp}.joblib"
+            upload_to_s3("production_model.joblib", bucket, snapshot_path)
+            
+            mlflow.set_tag("status", "Promoted")
+            mlflow.lightgbm.log_model(challenger, "model")
+            os.remove("production_model.joblib")
+        else:
+            print("✋ Champion remains superior. Decline promotion.")
+            mlflow.set_tag("status", "Rejected")
+
+    print("✨ Pipeline Complete.")
+
+if __name__ == "__main__":
+    train_and_log()

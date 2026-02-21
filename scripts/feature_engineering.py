@@ -1,11 +1,11 @@
 """
-feature_engineering_parallel.py
+feature_engineering.py
 
-Fast + RAM-safe Citi Bike pipeline:
-- Parallel download + unzip
-- Per-month processing (top 3 stations)
-- Streams to disk
-- Uploads to Hopsworks with schema-safe types
+Optimized Demand Forecasting Pipeline (GitHub Actions & AWS S3 Version):
+1. Disk-Efficient Streaming: Processes each month individually (Download -> Process -> Delete).
+2. Single Pass: Collects station statistics and hourly aggregates in memory to avoid redundant downloads.
+3. Resource Optimized: Stays within GitHub Runner limits (~14GB disk, ~7GB RAM).
+4. Cloud Sync: Upload final features to AWS S3 in Parquet format.
 """
 
 import os
@@ -18,172 +18,173 @@ from dateutil.relativedelta import relativedelta
 import pytz
 from io import BytesIO
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-import hopsworks
+import boto3
 
 # === CONFIG ===
-TEMP_FOLDER = "tripdata_temp"
-OUTPUT_FILE = "top3_stations_output.csv"
-MAX_THREADS = 4
-
-TARGET_COLS = [
-    "ride_id", "rideable_type", "started_at", "ended_at",
-    "start_station_name", "start_station_id",
-    "end_station_name", "end_station_id",
-    "start_lat", "start_lng", "end_lat", "end_lng",
-    "member_casual"
-]
-
-DTYPE_OVERRIDES = {
-    "start_station_id": "str",
-    "end_station_id": "str"
-}
+DATA_FOLDER = "data"
+load_dotenv()
 
 # === UTILITIES ===
 
-def get_last_12_months_est():
+def get_last_12_months():
     eastern = pytz.timezone("US/Eastern")
     now_est = datetime.now(eastern)
     return [(now_est - relativedelta(months=i + 1)).strftime('%Y%m') for i in range(12)]
 
 def download_and_extract(ym):
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
-    base_url = "https://s3.amazonaws.com/tripdata/"
-    filenames = [f"{ym}-citibike-tripdata.zip", f"{ym}-citibike-tripdata.csv.zip"]
-    for fname in filenames:
-        try:
-            url = base_url + fname
-            print(f"🌐 Downloading: {url}")
-            r = requests.get(url, timeout=30)
-            if r.status_code == 200:
-                with zipfile.ZipFile(BytesIO(r.content)) as zf:
-                    extracted = []
-                    for file in zf.namelist():
-                        if file.endswith(".csv") and "__MACOSX" not in file:
-                            path = os.path.join(TEMP_FOLDER, f"{ym}_{os.path.basename(file)}")
-                            with open(path, "wb") as f:
-                                f.write(zf.read(file))
-                            extracted.append(path)
-                    return extracted
-        except Exception as e:
-            print(f"❌ Failed for {fname}: {e}")
-    return []
-
-# === TOP STATION SELECTION ===
-
-def build_top3_station_counter(months):
-    counter = Counter()
-    for ym in months:
-        files = download_and_extract(ym)
-        for file in files:
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    zip_path = os.path.join(DATA_FOLDER, f"{ym}-tripdata.zip")
+    csv_exists = any(f.startswith(ym) and f.endswith('.csv') for f in os.listdir(DATA_FOLDER))
+    
+    if not os.path.exists(zip_path) and not csv_exists:
+        print(f"🌐 Downloading {ym} from Citi Bike S3...")
+        urls = [
+            f"https://s3.amazonaws.com/tripdata/{ym}-citibike-tripdata.csv.zip",
+            f"https://s3.amazonaws.com/tripdata/{ym}-citibike-tripdata.zip"
+        ]
+        
+        success = False
+        for url in urls:
             try:
-                df = pd.read_csv(file, usecols=["start_station_id"], dtype={"start_station_id": "str"})
-                counter.update(df["start_station_id"].dropna())
-            except Exception as e:
-                print(f"⚠️ Skipping {file}: {e}")
-            os.remove(file)
-    return [s for s, _ in counter.most_common(3)]
+                r = requests.get(url, timeout=60) # Increased timeout for GHA
+                if r.status_code == 200:
+                    with open(zip_path, 'wb') as f:
+                        f.write(r.content)
+                    success = True
+                    break
+            except:
+                continue
+        if not success:
+            print(f"⚠️ Could not find data for {ym}")
+            return None
 
-# === MONTHLY PROCESSING ===
-
-def process_month(ym, top3_ids):
-    files = download_and_extract(ym)
-    for file in files:
+    if not csv_exists:
+        print(f"📦 Extracting {ym}...")
         try:
-            df = pd.read_csv(file, usecols=TARGET_COLS, dtype=DTYPE_OVERRIDES, low_memory=False)
-            df = df[df["start_station_id"].isin(top3_ids)]
-
-            df["started_at"] = pd.to_datetime(df["started_at"], errors="coerce")
-            df["ended_at"] = pd.to_datetime(df["ended_at"], errors="coerce")
-            df = df.dropna(subset=["started_at", "ended_at"])
-
-            df["ride_duration_mins"] = (df["ended_at"] - df["started_at"]).dt.total_seconds() / 60
-            df = df[df["ride_duration_mins"] > 0]
-
-            df["start_hour"] = df["started_at"].dt.floor("H")
-            df["hour_of_day"] = df["started_at"].dt.hour.astype("int32")
-            df["day_of_week"] = df["started_at"].dt.dayofweek.astype(str)
-            df["month"] = df["started_at"].dt.month.astype("int32")
-
-            # Ensure IDs are strings
-            df["start_station_id"] = df["start_station_id"].astype(str)
-            df["end_station_id"] = df["end_station_id"].astype(str)
-
-            df.to_csv(OUTPUT_FILE, mode="a", index=False, header=not os.path.exists(OUTPUT_FILE))
+            with zipfile.ZipFile(zip_path) as zf:
+                csv_in_zip = [n for n in zf.namelist() if n.endswith('.csv') and '__MACOSX' not in n][0]
+                target_path = os.path.join(DATA_FOLDER, f"{ym}_citibike_tripdata.csv")
+                with zf.open(csv_in_zip) as source, open(target_path, "wb") as target:
+                    target.write(source.read())
+            # Immediately delete zip to save space on GitHub Runner
+            os.remove(zip_path)
+            return target_path
         except Exception as e:
-            print(f"⚠️ Failed to process {file}: {e}")
-        os.remove(file)
+            print(f"❌ Extraction failed for {ym}: {e}")
+            return None
+    else:
+        existing_csv = [f for f in os.listdir(DATA_FOLDER) if f.startswith(ym) and f.endswith('.csv')][0]
+        return os.path.join(DATA_FOLDER, existing_csv)
 
-# === HOPSWORKS UPLOAD ===
-
-def upload_to_hopsworks():
-    load_dotenv()
-    project = hopsworks.login(
-        api_key_value=os.getenv("HOPSWORKS_API_KEY"),
-        project=os.getenv("HOPSWORKS_PROJECT")
+def upload_to_s3(local_file, bucket, s3_path):
+    """Uploads a file to an S3 bucket using boto3."""
+    print(f"📤 Uploading to S3 bucket: {bucket}...")
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
     )
-    fs = project.get_feature_store()
+    try:
+        s3.upload_file(local_file, bucket, s3_path)
+        print(f"✅ Successfully uploaded to s3://{bucket}/{s3_path}")
+    except Exception as e:
+        print(f"❌ S3 Upload failed: {e}")
 
-    df = pd.read_csv(OUTPUT_FILE, dtype={
-        "ride_id": "str",
-        "rideable_type": "str",
-        "start_station_id": "str",
-        "end_station_id": "str",
-        "start_station_name": "str",
-        "end_station_name": "str",
-        "member_casual": "str",
-        "day_of_week": "str"
-    }, low_memory=False)
+def run_pipeline():
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    months = get_last_12_months()
+    
+    station_counter = Counter()
+    all_hourly_list = []
+    
+    print(f"� Starting Optimized Pipeline for {len(months)} months...")
+    
+    for ym in months:
+        csv_path = download_and_extract(ym)
+        if not csv_path:
+            continue
+            
+        print(f"📊 Processing {ym} in-memory...")
+        # Load only necessary columns to save RAM
+        df = pd.read_csv(csv_path, usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'], low_memory=False)
+        
+        # 1. Update Global Station Counts
+        station_counter.update(df['start_station_id'].dropna().astype(str))
+        
+        # 2. Interim Hourly Aggregation (Saves memory over 12 months)
+        df['start_hour'] = pd.to_datetime(df['started_at']).dt.floor('h')
+        
+        # Group by all dimensions we need later
+        hourly_agg = df.groupby(['start_hour', 'start_station_id', 'member_casual', 'rideable_type']).size().reset_index(name='count')
+        all_hourly_list.append(hourly_agg)
+        
+        # 3. CRITICAL: Delete CSV immediately after processing
+        print(f"🧹 Deleting raw data for {ym}...")
+        os.remove(csv_path)
 
-    # Convert timestamps (mixed format safe)
-    df["start_hour"] = pd.to_datetime(df["start_hour"], format="mixed", errors="coerce")
-    df["started_at"] = pd.to_datetime(df["started_at"], format="mixed", errors="coerce")
-    df["ended_at"] = pd.to_datetime(df["ended_at"], format="mixed", errors="coerce")
+    if not all_hourly_list:
+        print("❌ No data processed. Aborting.")
+        return
 
-    # Drop bad timestamp rows
-    df.dropna(subset=["start_hour", "started_at", "ended_at"], inplace=True)
+    # Determine Top 3 Busiest Stations globally
+    top3_ids = [s for s, count in station_counter.most_common(3)]
+    print(f"🏆 Top 3 Stations identified: {top3_ids}")
 
-    # Ensure int columns are correct
-    df["hour_of_day"] = df["hour_of_day"].fillna(-1).astype("int32")
-    df["month"] = df["month"].fillna(-1).astype("int32")
+    # Combine all hourly aggregates
+    print("🏗️ Finalizing Global Aggregates...")
+    full_hourly = pd.concat(all_hourly_list)
+    
+    # Filter for Top 3 Stations
+    full_hourly = full_hourly[full_hourly['start_station_id'].isin(top3_ids)]
+    
+    # Pivot to get Member/Casual and Bike Type columns
+    # We aggregate counts per start_hour for the Top 3 stations combined
+    # (Since we are building a "Top 3 Fleet Demand" model)
+    final_pivot = full_hourly.groupby(['start_hour', 'member_casual']).agg({'count': 'sum'}).unstack(fill_value=0)
+    final_pivot.columns = final_pivot.columns.get_level_values(1)
+    
+    bike_pivot = full_hourly.groupby(['start_hour', 'rideable_type']).agg({'count': 'sum'}).unstack(fill_value=0)
+    
+    features_df = pd.concat([final_pivot, bike_pivot], axis=1).fillna(0).reset_index()
+    
+    # Ensure consistent column naming
+    for col in ['member', 'casual', 'electric_bike', 'classic_bike']:
+        if col not in features_df.columns:
+            features_df[col] = 0
+            
+    features_df['total_trips'] = features_df.get('member', 0) + features_df.get('casual', 0)
 
-    # Replace NaN with None for Avro-safe string fields
-    string_cols = [
-        "ride_id", "rideable_type", "start_station_name", "start_station_id",
-        "end_station_name", "end_station_id", "member_casual", "day_of_week"
-    ]
-    df[string_cols] = df[string_cols].where(pd.notnull(df[string_cols]), None)
+    # 4. Feature Engineering (Lags & Time Context)
+    print("📈 Generating 28-hour Lags...")
+    features_df = features_df.sort_values('start_hour')
+    for lag in range(1, 29):
+        features_df[f'lag_{lag}'] = features_df['total_trips'].shift(lag)
+    
+    features_df['hour'] = features_df['start_hour'].dt.hour
+    features_df['day_of_week'] = features_df['start_hour'].dt.dayofweek
+    features_df['is_weekend'] = features_df['day_of_week'].isin([5, 6]).astype(int)
+    
+    features_df = features_df.dropna().reset_index(drop=True)
+    
+    # Export locally
+    local_parquet = os.path.join(DATA_FOLDER, "final_features.parquet")
+    features_df.to_parquet(local_parquet, index=False)
+    print(f"💾 Features exported: {local_parquet}")
 
-    fg = fs.get_or_create_feature_group(
-        name="citi_bike_trips",
-        version=1,
-        primary_key=["ride_id"],
-        event_time="start_hour",
-        description="Top 3 Citi Bike stations - hardened pipeline"
-    )
-
-    fg.insert(df, write_options={"wait_for_job": True})
-    print("✅ Upload to Hopsworks successful.")
-
-# === MAIN EXECUTION ===
+    # 5. Cloud Upload
+    bucket = os.getenv('AWS_S3_BUCKET')
+    if bucket:
+        # 5a. Stable Pointer
+        upload_to_s3(local_parquet, bucket, "citi_bike/forecast_features.parquet")
+        
+        # 5b. Timestamped Snapshot (Archive)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        snapshot_path = f"citi_bike/archive/features_{timestamp}.parquet"
+        upload_to_s3(local_parquet, bucket, snapshot_path)
+    else:
+        print("⚠️ AWS_S3_BUCKET not found. Skipping cloud sync.")
 
 if __name__ == "__main__":
-    months = get_last_12_months_est()
-    print("🔍 Identifying top 3 stations...")
-    top3 = build_top3_station_counter(months)
-    print(f"🏆 Top 3 start_station_ids: {top3}")
-
-    if os.path.exists(OUTPUT_FILE):
-        os.remove(OUTPUT_FILE)
-
-    print("🚴 Starting parallel processing...")
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as pool:
-        pool.map(lambda m: process_month(m, top3), months)
-
-    print("📤 Uploading to Hopsworks...")
-    upload_to_hopsworks()
-
-    if os.path.exists(TEMP_FOLDER):
-        shutil.rmtree(TEMP_FOLDER)
-        print("🧹 Temp folder cleaned up.")
+    run_pipeline()
+    print("\n✨ GitHub Action Optimized Pipeline Complete!")

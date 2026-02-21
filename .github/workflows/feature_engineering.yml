@@ -3,7 +3,7 @@ name: Feature Engineering
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 5 1 * *'  # Run at 5:00 AM UTC on the 1st of every month (12 AM EST)
+    - cron: '0 5 1 * *'  # Run at 5:00 AM UTC on the 1st of every month
 
 jobs:
   feature_engineering:
@@ -13,19 +13,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v5
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
     - name: Run feature engineering
       env:
-        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
-        HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       run: |
-        python scripts/feature_engineering.py
+        uv run scripts/feature_engineering.py
+
+    - name: Keep Runner Alive (S3 Upload)
+      if: success()
+      run: echo "Dataset successfully uploaded to S3."

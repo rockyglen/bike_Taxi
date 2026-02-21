@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+data/*
+!data/.gitkeep
+.env
+.ipynb_checkpoints
+notebooks/
+scripts/archive/
+*.log
+*.parquet
+*.joblib
