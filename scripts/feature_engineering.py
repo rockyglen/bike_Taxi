@@ -47,13 +47,15 @@ def download_and_extract(ym):
         success = False
         for url in urls:
             try:
-                r = requests.get(url, timeout=60) # Increased timeout for GHA
-                if r.status_code == 200:
-                    with open(zip_path, 'wb') as f:
-                        f.write(r.content)
-                    success = True
-                    break
-            except:
+                # Streaming download to avoid memory spikes
+                with requests.get(url, stream=True, timeout=90) as r:
+                    if r.status_code == 200:
+                        with open(zip_path, 'wb') as f:
+                            shutil.copyfileobj(r.raw, f)
+                        success = True
+                        break
+            except Exception as e:
+                print(f"🔗 Try next URL... (Error: {e})")
                 continue
         if not success:
             print(f"⚠️ Could not find data for {ym}")
@@ -105,9 +107,22 @@ def run_pipeline():
         if not csv_path:
             continue
             
-        print(f"📊 Processing {ym} in-memory...")
-        # Load only necessary columns to save RAM
-        df = pd.read_csv(csv_path, usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'], low_memory=False)
+        print(f"📊 Processing {ym} with pyarrow engine...")
+        # Load only necessary columns with the fastest engine available
+        try:
+            df = pd.read_csv(
+                csv_path, 
+                usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
+                engine='pyarrow',
+                dtype_backend='pyarrow'
+            )
+        except:
+            # Fallback if pyarrow engine fails for any reason
+            df = pd.read_csv(
+                csv_path, 
+                usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
+                low_memory=False
+            )
         
         # 1. Update Global Station Counts
         station_counter.update(df['start_station_id'].dropna().astype(str))
