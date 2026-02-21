@@ -22,9 +22,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from dotenv import load_dotenv
 
 # Evidently AI for Drift
-from evidently.report import Report
-from evidently.metric_preset import DataDriftPreset, TargetDriftPreset
-
+from evidently import Report
+from evidently.presets import DataDriftPreset
 # === CONFIG & LOAD ENV ===
 load_dotenv()
 DATA_FOLDER = "data"
@@ -65,15 +64,14 @@ def run_drift_report(reference, current):
     print("📡 Monitoring Data Drift...")
     drift_report = Report(metrics=[
         DataDriftPreset(),
-        TargetDriftPreset(),
     ])
     
-    # We only check drift on the features used for training
-    drift_report.run(reference_data=reference, current_data=current)
+    # In modern Evidently, run() returns a snapshot containing the results
+    snapshot = drift_report.run(reference_data=reference, current_data=current)
     
     report_path = os.path.join(DATA_FOLDER, "drift_report.html")
-    drift_report.save_html(report_path)
-    return report_path, drift_report.as_dict()
+    snapshot.save_html(report_path)
+    return report_path, snapshot.dict()
 
 def train_and_log():
     bucket = os.getenv('AWS_S3_BUCKET')
@@ -85,6 +83,13 @@ def train_and_log():
         return
 
     df = pd.read_parquet(local_feature_path)
+    
+    # Ensure all columns are standard numpy-compatible types
+    # pyarrow-backed types (int64[pyarrow]) cause issues with legacy numpy functions & LightGBM
+    for col in df.columns:
+        if pd.api.types.is_extension_array_dtype(df[col]):
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
+            
     df = df.sort_values('start_hour').reset_index(drop=True)
 
     # 1. Split Data for Training and Drift Analysis
@@ -100,8 +105,18 @@ def train_and_log():
     target = 'total_trips'
 
     # 2. DRIFT DETECTION
-    report_html, report_dict = run_drift_report(train_df[features + [target]], test_df[features + [target]])
-    drift_detected = report_dict['metrics'][0]['result']['dataset_drift']
+    report_html, report_dict = run_drift_report(
+        train_df[features + [target]], 
+        test_df[features + [target]]
+    )
+    
+    # Extract dataset drift status from the modern Evidently report structure
+    try:
+        # The first metric in DataDriftPreset is typically the DatasetDriftMetric
+        drift_detected = report_dict['metrics'][0]['value']['dataset_drift']
+    except (KeyError, IndexError):
+        drift_detected = False
+    
     print(f"📊 Data Drift Detected: {drift_detected}")
 
     # 3. TRAINING (Challenger)
