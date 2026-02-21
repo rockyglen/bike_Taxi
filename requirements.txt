@@ -7,13 +7,12 @@ pyarrow==19.0.1
 scipy==1.15.3
 
 # MLOps & Infrastructure
-hopsworks==4.2.2
 mlflow==2.22.0
 python-dotenv==1.1.0
 requests==2.32.3
 boto3==1.38.13
 tqdm==4.67.1
-evidently==0.4.37
+evidently==0.7.20
 
 # Visualization & Dashboard
 streamlit
