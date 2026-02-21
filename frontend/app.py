@@ -98,6 +98,12 @@ def download_and_load_data():
         nyc_tz = pytz.timezone("US/Eastern")
         df['target_hour'] = df['target_hour'].dt.tz_convert(nyc_tz)
         
+        if 'prediction_generated_at' in df.columns:
+            df['prediction_generated_at'] = pd.to_datetime(df['prediction_generated_at'])
+            if df['prediction_generated_at'].dt.tz is None:
+                df['prediction_generated_at'] = df['prediction_generated_at'].dt.tz_localize(pytz.UTC)
+            df['prediction_generated_at'] = df['prediction_generated_at'].dt.tz_convert(nyc_tz)
+        
         # Filter: Only show predictions from 'now' (current hour) onwards
         # Note: comparison works even with different TZs if both are aware
         now_nyc = datetime.now(nyc_tz).replace(minute=0, second=0, microsecond=0)
@@ -127,12 +133,8 @@ if df is not None:
     peak_demand = df['predicted_trips'].max()
     peak_hour = df.loc[df['predicted_trips'].idxmax(), 'target_hour']
     
-    # Format Last Sync (convert to Eastern if needed)
-    sync_time = pd.to_datetime(df.iloc[0]['prediction_generated_at'])
-    if sync_time.tzinfo is None:
-        sync_time = pytz.UTC.localize(sync_time)
-    sync_time_nyc = sync_time.astimezone(pytz.timezone("US/Eastern"))
-    last_sync = sync_time_nyc.strftime('%I:%M %p')
+    # Format Last Sync
+    last_sync = df.iloc[0]['prediction_generated_at'].strftime('%I:%M %p')
     
     col1.metric("Live Forecast", f"{df.iloc[0]['predicted_trips']:.1f}", delta="Trips/Hr")
     col2.metric("24h Peak", f"{peak_demand:.1f}", delta="Projected")
