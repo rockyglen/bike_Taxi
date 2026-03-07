@@ -46,20 +46,16 @@ export default function MonthlyInsights() {
         return (
             <div className="flex min-h-[60vh] items-center justify-center">
                 <div className="max-w-lg text-center">
-                    <p className="text-lg font-bold text-yellow-400">⚠️ Monthly data file not found.</p>
+                    <p className="text-lg font-bold text-yellow-400">⚠️ Monthly stats not yet on S3.</p>
                     <div className="mt-4 text-left text-sm text-white/60">
-                        <p className="mb-3">To resolve this:</p>
-                        <ol className="list-inside list-decimal space-y-2">
-                            <li>Open the <code className="rounded bg-white/10 px-1">03_Monthly_Analysis.ipynb</code> notebook</li>
-                            <li>Run the first cell to download the dataset</li>
-                            <li>Refresh this page</li>
-                        </ol>
-                        <p className="mt-4">Or run this command:</p>
-                        <code className="mt-2 block rounded-lg bg-white/5 px-4 py-2 text-xs text-white/70">
-                            mkdir -p data && curl -L -o data/202512-citibike-tripdata.zip
-                            https://s3.amazonaws.com/tripdata/202512-citibike-tripdata.zip &&
-                            unzip -o data/202512-citibike-tripdata.zip -d data/
+                        <p className="mb-3">Run the feature engineering pipeline to generate them:</p>
+                        <code className="block rounded-lg bg-white/5 px-4 py-2 text-xs text-white/70">
+                            uv run scripts/feature_engineering.py
                         </code>
+                        <p className="mt-4 text-xs text-white/40">
+                            This runs automatically via GitHub Actions on the 1st of each month.
+                            After the first run, this page will self-update monthly.
+                        </p>
                     </div>
                 </div>
             </div>

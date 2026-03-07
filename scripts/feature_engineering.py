@@ -93,6 +93,144 @@ def upload_to_s3(local_file, bucket, s3_path):
     except Exception as e:
         print(f"❌ S3 Upload failed: {e}")
 
+
+def generate_monthly_stats(ym, bucket):
+    """
+    Downloads the most recent month's CSV with full columns and computes
+    all aggregates needed by the Monthly Insights dashboard, then uploads
+    as monthly_stats.json to S3.
+    """
+    import json
+    from collections import defaultdict
+
+    print(f"\n📊 Generating Monthly Dashboard Stats for {ym}...")
+    csv_path = download_and_extract(ym)
+    if not csv_path:
+        print(f"⚠️ Could not download {ym} for monthly stats. Skipping.")
+        return
+
+    # Full columns needed for dashboard (more than the model needs)
+    full_cols = [
+        'started_at', 'ended_at',
+        'member_casual', 'rideable_type',
+        'start_station_name', 'end_station_name',
+        'start_lat', 'start_lng',
+    ]
+    try:
+        df = pd.read_csv(csv_path, usecols=full_cols, low_memory=False)
+    except Exception as e:
+        # Some older files may not have all columns — read what's available
+        print(f"⚠️ Column mismatch, loading available columns: {e}")
+        df = pd.read_csv(csv_path, low_memory=False)
+
+    # Parse timestamps & compute duration
+    df['started_at'] = pd.to_datetime(df['started_at'], errors='coerce')
+    df['ended_at'] = pd.to_datetime(df['ended_at'], errors='coerce')
+    df['duration_min'] = (df['ended_at'] - df['started_at']).dt.total_seconds() / 60
+
+    # Outlier removal: same as Streamlit app (1–240 min)
+    df = df[(df['duration_min'] > 1) & (df['duration_min'] < 240)].copy()
+    df = df.dropna(subset=['started_at'])
+
+    df['hour'] = df['started_at'].dt.hour
+
+    total_trips = len(df)
+    avg_duration = round(float(df['duration_min'].mean()), 1)
+    member_ratio = round(float((df['member_casual'] == 'member').mean() * 100), 1)
+    peak_hour = int(df['hour'].mode()[0])
+
+    # Hourly density by member/casual
+    hourly = df.groupby(['hour', 'member_casual']).size().reset_index(name='count')
+    hourly_density = [
+        {'hour': int(r.hour), 'type': r.member_casual, 'count': int(r['count'])}
+        for _, r in hourly.iterrows()
+    ]
+
+    # Rideable type counts
+    rideable = df['rideable_type'].value_counts().reset_index()
+    rideable.columns = ['type', 'count']
+    rideable_data = [{'type': r['type'], 'count': int(r['count'])} for _, r in rideable.iterrows()]
+
+    # Duration distribution (5-min bins, capped at 60)
+    bin_size = 5
+    df['bin'] = (df['duration_min'] // bin_size * bin_size).clip(upper=60).astype(int)
+    dur = df.groupby(['bin', 'member_casual']).size().reset_index(name='count')
+    duration_data = [
+        {
+            'bin': int(r['bin']),
+            'binLabel': f"{int(r['bin'])}-{int(r['bin']) + bin_size}",
+            'type': r['member_casual'],
+            'count': int(r['count'])
+        }
+        for _, r in dur.iterrows()
+    ]
+
+    # Top 10 routes
+    if 'start_station_name' in df.columns and 'end_station_name' in df.columns:
+        df['route'] = df['start_station_name'].fillna('') + ' → ' + df['end_station_name'].fillna('')
+        route_counts = df[df['route'] != ' → ']['route'].value_counts().head(10)
+        top_routes = [{'route': r, 'count': int(c)} for r, c in route_counts.items()]
+    else:
+        top_routes = []
+
+    # Station geo data (top 500 by volume)
+    if 'start_station_name' in df.columns and 'start_lat' in df.columns:
+        geo_df = df.groupby('start_station_name').agg(
+            lat=('start_lat', 'first'),
+            lng=('start_lng', 'first'),
+            count=('started_at', 'count')
+        ).reset_index()
+        geo_df = geo_df.dropna(subset=['lat', 'lng'])
+        geo_df = geo_df.sort_values('count', ascending=False).head(500)
+        geo_data = [
+            {'station': r['start_station_name'], 'lat': float(r['lat']),
+             'lng': float(r['lng']), 'count': int(r['count'])}
+            for _, r in geo_df.iterrows()
+        ]
+    else:
+        geo_data = []
+
+    # Top 10 stations
+    if 'start_station_name' in df.columns:
+        station_counts = df['start_station_name'].value_counts().head(10)
+        top_stations = [{'station': s, 'count': int(c)} for s, c in station_counts.items()]
+    else:
+        top_stations = []
+
+    stats = {
+        'summary': {
+            'totalTrips': total_trips,
+            'avgDuration': avg_duration,
+            'memberRatio': member_ratio,
+            'peakHour': peak_hour,
+            'fileName': f'{ym}-citibike-tripdata.csv',
+        },
+        'hourlyDensity': hourly_density,
+        'rideableData': rideable_data,
+        'durationData': duration_data,
+        'topRoutes': top_routes,
+        'geoData': geo_data,
+        'topStations': top_stations,
+    }
+
+    # Save locally and upload to S3
+    local_json = os.path.join(DATA_FOLDER, 'monthly_stats.json')
+    with open(local_json, 'w') as f:
+        json.dump(stats, f)
+
+    print(f"💾 Monthly stats written: {local_json}")
+    os.remove(csv_path)  # Clean up immediately
+
+    if bucket:
+        # Stable pointer
+        upload_to_s3(local_json, bucket, 'citi_bike/monthly_stats.json')
+        # Timestamped archive
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        upload_to_s3(local_json, bucket, f'citi_bike/archive/monthly_stats_{timestamp}.json')
+        print(f"✅ Monthly stats uploaded to S3.")
+    else:
+        print("⚠️ AWS_S3_BUCKET not set. Skipping S3 upload for monthly stats.")
+
 def run_pipeline():
     os.makedirs(DATA_FOLDER, exist_ok=True)
     months = get_last_12_months()
@@ -199,6 +337,12 @@ def run_pipeline():
         upload_to_s3(local_parquet, bucket, snapshot_path)
     else:
         print("⚠️ AWS_S3_BUCKET not found. Skipping cloud sync.")
+
+    # 6. Monthly Dashboard Stats (for the Next.js frontend)
+    # Processes the most recent month with full columns (routes, geo, durations)
+    # and uploads monthly_stats.json to S3 so the deployed frontend can read it.
+    most_recent_month = months[0]  # months[0] is the most recent (last month)
+    generate_monthly_stats(most_recent_month, bucket)
 
 if __name__ == "__main__":
     run_pipeline()

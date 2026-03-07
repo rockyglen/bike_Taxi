@@ -166,7 +166,14 @@ def train_and_log():
             upload_to_s3("production_model.joblib", bucket, snapshot_path)
             
             mlflow.set_tag("status", "Promoted")
-            mlflow.lightgbm.log_model(challenger, "model")
+            # log_model uses a newer MLflow API (create_logged_model) that some
+            # remote tracking servers (e.g. DagsHub free tier) may not support yet.
+            # Wrap so a server-side 500 never kills the pipeline — the model is
+            # already safely promoted to S3 above.
+            try:
+                mlflow.lightgbm.log_model(challenger, "model")
+            except Exception as log_model_err:
+                print(f"⚠️ mlflow.log_model skipped (tracking server error): {log_model_err}")
             os.remove("production_model.joblib")
         else:
             print("✋ Champion remains superior. Decline promotion.")
