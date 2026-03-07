@@ -68,9 +68,8 @@ def run_inference():
     
     # Features required by the model (matches train_model.py)
     lags = [f'lag_{i}' for i in range(1, 29)]
-    categorical = ['hour', 'day_of_week', 'is_weekend']
-    demographics = ['member', 'casual', 'electric_bike', 'classic_bike']
-    feature_cols = lags + categorical + demographics
+    categorical = ['hour', 'day_of_week', 'is_weekend', 'month']
+    feature_cols = lags + categorical
     
     # 3. Recursive Forecasting (Bridge to Now + Next 24 Hours)
     # Perform all time math in UTC to avoid timezone comparison issues
@@ -96,13 +95,16 @@ def run_inference():
         
         # Advance state
         this_time = last_known_hour + timedelta(hours=i)
-        new_lags = {'lag_1': pred_value}
-        for l in range(2, 29):
-            new_lags[f'lag_{l}'] = current_state[f'lag_{l-1}']
-        current_state.update(new_lags)
+        
+        # Shift lags: lag_28 falls off, lag_2 gets old lag_1, lag_1 gets new prediction
+        for l in range(28, 1, -1):
+            current_state[f'lag_{l}'] = current_state[f'lag_{l-1}']
+        current_state['lag_1'] = pred_value
+        
         current_state['hour'] = this_time.hour
         current_state['day_of_week'] = this_time.weekday()
         current_state['is_weekend'] = 1 if this_time.weekday() >= 5 else 0
+        current_state['month'] = this_time.month
 
     # Step B: Generate the actual 24h forecast
     print("🔮 Generating live 24h forecast...")
@@ -120,13 +122,15 @@ def run_inference():
         })
         
         # Advance state
-        new_lags = {'lag_1': pred_value}
-        for l in range(2, 29):
-            new_lags[f'lag_{l}'] = current_state[f'lag_{l-1}']
-        current_state.update(new_lags)
+        # Shift lags: lag_28 falls off, lag_2 gets old lag_1, lag_1 gets new prediction
+        for l in range(28, 1, -1):
+            current_state[f'lag_{l}'] = current_state[f'lag_{l-1}']
+        current_state['lag_1'] = pred_value
+        
         current_state['hour'] = future_time.hour
         current_state['day_of_week'] = future_time.weekday()
         current_state['is_weekend'] = 1 if future_time.weekday() >= 5 else 0
+        current_state['month'] = future_time.month
 
     # 4. Save and Upload Predictions
     if not predictions:

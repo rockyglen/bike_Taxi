@@ -99,9 +99,8 @@ def train_and_log():
     test_df = df.iloc[split_idx:]
 
     lags = [f'lag_{i}' for i in range(1, 29)]
-    categorical = ['hour', 'day_of_week', 'is_weekend']
-    demographics = ['member', 'casual', 'electric_bike', 'classic_bike']
-    features = lags + categorical + demographics
+    categorical = ['hour', 'day_of_week', 'is_weekend', 'month']
+    features = lags + categorical
     target = 'total_trips'
 
     # 2. DRIFT DETECTION
@@ -122,7 +121,16 @@ def train_and_log():
     # 3. TRAINING (Challenger)
     print("🚀 Training Challenger Model...")
     challenger = lgb.LGBMRegressor(n_estimators=1000, learning_rate=0.05, random_state=42)
-    challenger.fit(train_df[features], train_df[target], eval_set=[(test_df[features], test_df[target])])
+    
+    # Categorical features must be explicitly passed to LightGBM for best performance
+    cat_features = ['hour', 'day_of_week', 'is_weekend', 'month']
+    challenger.fit(
+        train_df[features], 
+        train_df[target], 
+        eval_set=[(test_df[features], test_df[target])],
+        categorical_feature=cat_features,
+        callbacks=[lgb.early_stopping(stopping_rounds=50)]
+    )
     
     challenger_preds = challenger.predict(test_df[features])
     challenger_mae = mean_absolute_error(test_df[target], challenger_preds)
@@ -178,6 +186,45 @@ def train_and_log():
         else:
             print("✋ Champion remains superior. Decline promotion.")
             mlflow.set_tag("status", "Rejected")
+            promotion_status = "Rejected"
+
+    # 7. SAVE EVALUATION METRICS TO S3
+    print("📈 Computing model evaluation metrics...")
+    import json, math
+    from sklearn.metrics import mean_absolute_percentage_error
+
+    challenger_rmse = math.sqrt(mean_squared_error(test_df[target], challenger_preds))
+    try:
+        challenger_mape = mean_absolute_percentage_error(test_df[target], challenger_preds) * 100
+    except Exception:
+        challenger_mape = None
+
+    # Feature importances (top 10)
+    fi = dict(zip(features, map(float, challenger.feature_importances_)))
+    top_features = dict(sorted(fi.items(), key=lambda x: x[1], reverse=True)[:10])
+    total_fi = sum(top_features.values()) or 1
+    top_features_pct = {k: round(v / total_fi * 100, 1) for k, v in top_features.items()}
+
+    metrics_payload = {
+        "mae": round(float(challenger_mae), 4),
+        "rmse": round(float(challenger_rmse), 4),
+        "mape": round(float(challenger_mape), 2) if challenger_mape is not None else None,
+        "champion_mae": round(float(champion_mae), 4) if champion_mae != float('inf') else None,
+        "n_train": len(train_df),
+        "n_test": len(test_df),
+        "n_features": len(features),
+        "n_estimators": challenger.best_iteration_ if hasattr(challenger, 'best_iteration_') else challenger.n_estimators,
+        "top_features": top_features_pct,
+        "drift_detected": bool(drift_detected),
+        "promotion_status": promotion_status,
+        "run_date": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    metrics_local = os.path.join(DATA_FOLDER, "model_metrics.json")
+    with open(metrics_local, "w") as f:
+        json.dump(metrics_payload, f, indent=2)
+    upload_to_s3(metrics_local, bucket, "models/model_metrics.json")
+    print(f"✅ Metrics saved: MAE={metrics_payload['mae']} | RMSE={metrics_payload['rmse']} | Status={promotion_status}")
 
     print("✨ Pipeline Complete.")
 

@@ -61,6 +61,7 @@ function LiveDot() {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function LiveDashboard() {
     const { data, error, loading, lastRefreshed, refresh } = useAutoRefresh('/api/predictions', 30 * 60 * 1000);
+    const { data: metricsData } = useAutoRefresh('/api/model-metrics', 60 * 60 * 1000);
     const [showTable, setShowTable] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -151,7 +152,12 @@ export default function LiveDashboard() {
                         </button>
                         {lastRefreshed && (
                             <p className="text-xs text-white/30">
-                                Last synced: {lastRefreshed.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                                Last synced: {lastRefreshed.toLocaleTimeString('en-US', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    timeZone: 'America/New_York',
+                                    timeZoneName: 'short'
+                                })}
                             </p>
                         )}
                     </div>
@@ -255,21 +261,84 @@ export default function LiveDashboard() {
                             <Cpu size={16} className="text-nyc-cyan" />
                             Model Intelligence
                         </div>
-                        <div className="space-y-2">
-                            {[
-                                { label: 'Algorithm', value: 'LightGBM GBDT' },
-                                { label: 'Strategy', value: 'Recursive Bridge' },
-                                { label: 'Feature Lags', value: '28 hours' },
-                                { label: 'Training Data', value: '12 months' },
-                                { label: 'Tracking', value: 'MLflow / DagsHub' },
-                                { label: 'Promotion', value: 'Champion vs Challenger' },
-                            ].map(({ label, value }) => (
-                                <div key={label} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-1.5">
-                                    <span className="text-xs text-white/40">{label}</span>
-                                    <span className="text-xs font-semibold text-white">{value}</span>
+                        {metricsData ? (
+                            <>
+                                {/* Performance Metrics */}
+                                <div className="grid grid-cols-3 gap-2">
+                                    {[
+                                        { label: 'MAE', value: metricsData.mae?.toFixed(2) },
+                                        { label: 'RMSE', value: metricsData.rmse?.toFixed(2) },
+                                        { label: 'MAPE', value: metricsData.mape != null ? `${metricsData.mape.toFixed(1)}%` : '—' },
+                                    ].map(({ label, value }) => (
+                                        <div key={label} className="flex flex-col items-center rounded-lg bg-white/5 py-2">
+                                            <span className="text-[10px] text-white/40 uppercase tracking-widest">{label}</span>
+                                            <span className="text-sm font-bold text-nyc-cyan">{value ?? '—'}</span>
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
-                        </div>
+
+                                {/* Promotion status badge */}
+                                <div className={`rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-2 ${metricsData.promotion_status === 'Promoted'
+                                        ? 'bg-green-500/10 text-green-400'
+                                        : 'bg-white/5 text-white/40'
+                                    }`}>
+                                    <span>{metricsData.promotion_status === 'Promoted' ? '🎊' : '✋'}</span>
+                                    <span>{metricsData.promotion_status === 'Promoted' ? 'Challenger Promoted' : 'Champion Retained'}</span>
+                                </div>
+
+                                {/* Top Features Mini-Bar */}
+                                {metricsData.top_features && (
+                                    <div className="space-y-1.5">
+                                        <p className="text-[10px] uppercase tracking-widest text-white/30">Top Features</p>
+                                        {Object.entries(metricsData.top_features).slice(0, 5).map(([feat, pct]) => (
+                                            <div key={feat} className="flex items-center gap-2">
+                                                <span className="w-14 truncate text-[10px] text-white/40">{feat}</span>
+                                                <div className="flex-1 rounded-full bg-white/10 h-1.5">
+                                                    <div
+                                                        className="h-1.5 rounded-full bg-nyc-cyan"
+                                                        style={{ width: `${pct}%` }}
+                                                    />
+                                                </div>
+                                                <span className="text-[10px] text-white/40 w-6 text-right">{pct}%</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* Metadata */}
+                                <div className="space-y-1 border-t border-white/5 pt-2">
+                                    {[
+                                        { label: 'Algorithm', value: 'LightGBM GBDT' },
+                                        { label: 'Strategy', value: 'Recursive Bridge' },
+                                        { label: 'Samples', value: `${(metricsData.n_train ?? 0).toLocaleString()} train` },
+                                        { label: 'Tracking', value: 'MLflow / DagsHub' },
+                                        { label: 'Last Run', value: metricsData.run_date ? new Date(metricsData.run_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) : '—' },
+                                    ].map(({ label, value }) => (
+                                        <div key={label} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-1.5">
+                                            <span className="text-xs text-white/40">{label}</span>
+                                            <span className="text-xs font-semibold text-white">{value}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        ) : (
+                            // Fallback while loading or if no metrics exist yet
+                            <div className="space-y-2">
+                                {[
+                                    { label: 'Algorithm', value: 'LightGBM GBDT' },
+                                    { label: 'Strategy', value: 'Recursive Bridge' },
+                                    { label: 'Feature Lags', value: '28 hours' },
+                                    { label: 'Training Data', value: '12 months' },
+                                    { label: 'Tracking', value: 'MLflow / DagsHub' },
+                                    { label: 'Promotion', value: 'Champion vs Challenger' },
+                                ].map(({ label, value }) => (
+                                    <div key={label} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-1.5">
+                                        <span className="text-xs text-white/40">{label}</span>
+                                        <span className="text-xs font-semibold text-white">{value}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {/* Rush Hour Alert */}

@@ -317,6 +317,7 @@ def run_pipeline():
     features_df['hour'] = features_df['start_hour'].dt.hour
     features_df['day_of_week'] = features_df['start_hour'].dt.dayofweek
     features_df['is_weekend'] = features_df['day_of_week'].isin([5, 6]).astype(int)
+    features_df['month'] = features_df['start_hour'].dt.month
     
     features_df = features_df.dropna().reset_index(drop=True)
     
