@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { parquetRead } from 'hyparquet';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 const s3 = new S3Client({
     region: 'us-east-1',
     credentials: {
