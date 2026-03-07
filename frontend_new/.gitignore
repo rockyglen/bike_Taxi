@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+.next/
+out/
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Vercel
+.vercel
+
+# Cache
+.next/cache/

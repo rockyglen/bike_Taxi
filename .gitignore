@@ -113,3 +113,25 @@ dist/
 *.csv
 
 .model_lags/
+
+# ─── Next.js (frontend_new/) ───────────────────────────────────────────────
+
+# Dependencies
+frontend_new/node_modules/
+
+# Build output
+frontend_new/.next/
+frontend_new/out/
+
+# Local env files (keep .env in root ignored, cover all frontend variants)
+frontend_new/.env
+frontend_new/.env.local
+frontend_new/.env.development.local
+frontend_new/.env.test.local
+frontend_new/.env.production.local
+
+# Vercel deployment
+frontend_new/.vercel
+
+# Next.js cache / telemetry
+frontend_new/.next/cache/
