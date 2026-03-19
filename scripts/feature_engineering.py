@@ -1,11 +1,12 @@
 """
 feature_engineering.py
 
-Optimized Demand Forecasting Pipeline (GitHub Actions & AWS S3 Version):
+Optimized Demand Forecasting Pipeline (GitHub Actions + Hopsworks Version):
 1. Disk-Efficient Streaming: Processes each month individually (Download -> Process -> Delete).
 2. Single Pass: Collects station statistics and hourly aggregates in memory to avoid redundant downloads.
 3. Resource Optimized: Stays within GitHub Runner limits (~14GB disk, ~7GB RAM).
-4. Cloud Sync: Upload final features to AWS S3 in Parquet format.
+4. Feature Store: Uploads final features to Hopsworks Feature Store.
+5. S3: Uploads monthly_stats.json to S3 for the Next.js frontend.
 """
 
 import os
@@ -20,6 +21,7 @@ from io import BytesIO
 from collections import Counter
 from dotenv import load_dotenv
 import boto3
+import hopsworks
 
 # === CONFIG ===
 DATA_FOLDER = "data"
@@ -36,14 +38,14 @@ def download_and_extract(ym):
     os.makedirs(DATA_FOLDER, exist_ok=True)
     zip_path = os.path.join(DATA_FOLDER, f"{ym}-tripdata.zip")
     csv_exists = any(f.startswith(ym) and f.endswith('.csv') for f in os.listdir(DATA_FOLDER))
-    
+
     if not os.path.exists(zip_path) and not csv_exists:
         print(f"🌐 Downloading {ym} from Citi Bike S3...")
         urls = [
             f"https://s3.amazonaws.com/tripdata/{ym}-citibike-tripdata.csv.zip",
             f"https://s3.amazonaws.com/tripdata/{ym}-citibike-tripdata.zip"
         ]
-        
+
         success = False
         for url in urls:
             try:
@@ -80,8 +82,8 @@ def download_and_extract(ym):
         return os.path.join(DATA_FOLDER, existing_csv)
 
 def upload_to_s3(local_file, bucket, s3_path):
-    """Uploads a file to an S3 bucket using boto3."""
-    print(f"📤 Uploading to S3 bucket: {bucket}...")
+    """Uploads a file to S3 (used only for frontend-serving files)."""
+    print(f"📤 Uploading to S3: {s3_path}...")
     s3 = boto3.client(
         's3',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
@@ -89,16 +91,44 @@ def upload_to_s3(local_file, bucket, s3_path):
     )
     try:
         s3.upload_file(local_file, bucket, s3_path)
-        print(f"✅ Successfully uploaded to s3://{bucket}/{s3_path}")
+        print(f"✅ Uploaded to s3://{bucket}/{s3_path}")
     except Exception as e:
         print(f"❌ S3 Upload failed: {e}")
+
+def upload_features_to_hopsworks(df):
+    """Inserts the engineered features into the Hopsworks Feature Store."""
+    print("🔗 Connecting to Hopsworks...")
+    project = hopsworks.login(
+        api_key_value=os.getenv('HOPSWORKS_API_KEY'),
+        project=os.getenv('HOPSWORKS_PROJECT'),
+    )
+    fs = project.get_feature_store()
+
+    # Ensure standard numpy types (pyarrow-backed types cause schema issues)
+    df_insert = df.copy()
+    for col in df_insert.columns:
+        if pd.api.types.is_extension_array_dtype(df_insert[col]):
+            df_insert[col] = pd.to_numeric(df_insert[col], errors='coerce').astype(float)
+    # start_hour must be a plain datetime for Hopsworks event_time
+    df_insert['start_hour'] = pd.to_datetime(df_insert['start_hour']).dt.tz_localize(None)
+
+    fg = fs.get_or_create_feature_group(
+        name="forecast_features",
+        version=1,
+        primary_key=["start_hour"],
+        event_time="start_hour",
+        description="Hourly Citi Bike demand features (top-3 stations, 28 lags)",
+    )
+    print("📤 Inserting features into Hopsworks Feature Store...")
+    fg.insert(df_insert, write_options={"wait_for_job": True})
+    print("✅ Features inserted into Hopsworks Feature Store.")
 
 
 def generate_monthly_stats(ym, bucket):
     """
     Downloads the most recent month's CSV with full columns and computes
     all aggregates needed by the Monthly Insights dashboard, then uploads
-    as monthly_stats.json to S3.
+    as monthly_stats.json to S3 so the Next.js frontend can read it.
     """
     import json
     from collections import defaultdict
@@ -213,7 +243,7 @@ def generate_monthly_stats(ym, bucket):
         'topStations': top_stations,
     }
 
-    # Save locally and upload to S3
+    # Save locally and upload to S3 (frontend reads this)
     local_json = os.path.join(DATA_FOLDER, 'monthly_stats.json')
     with open(local_json, 'w') as f:
         json.dump(stats, f)
@@ -222,11 +252,7 @@ def generate_monthly_stats(ym, bucket):
     os.remove(csv_path)  # Clean up immediately
 
     if bucket:
-        # Stable pointer
         upload_to_s3(local_json, bucket, 'citi_bike/monthly_stats.json')
-        # Timestamped archive
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        upload_to_s3(local_json, bucket, f'citi_bike/archive/monthly_stats_{timestamp}.json')
         print(f"✅ Monthly stats uploaded to S3.")
     else:
         print("⚠️ AWS_S3_BUCKET not set. Skipping S3 upload for monthly stats.")
@@ -234,22 +260,22 @@ def generate_monthly_stats(ym, bucket):
 def run_pipeline():
     os.makedirs(DATA_FOLDER, exist_ok=True)
     months = get_last_12_months()
-    
+
     station_counter = Counter()
     all_hourly_list = []
-    
-    print(f"� Starting Optimized Pipeline for {len(months)} months...")
-    
+
+    print(f"🚀 Starting Optimized Pipeline for {len(months)} months...")
+
     for ym in months:
         csv_path = download_and_extract(ym)
         if not csv_path:
             continue
-            
+
         print(f"📊 Processing {ym} with pyarrow engine...")
         # Load only necessary columns with the fastest engine available
         try:
             df = pd.read_csv(
-                csv_path, 
+                csv_path,
                 usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
                 engine='pyarrow',
                 dtype_backend='pyarrow'
@@ -257,21 +283,21 @@ def run_pipeline():
         except:
             # Fallback if pyarrow engine fails for any reason
             df = pd.read_csv(
-                csv_path, 
+                csv_path,
                 usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
                 low_memory=False
             )
-        
+
         # 1. Update Global Station Counts
         station_counter.update(df['start_station_id'].dropna().astype(str))
-        
+
         # 2. Interim Hourly Aggregation (Saves memory over 12 months)
         df['start_hour'] = pd.to_datetime(df['started_at']).dt.floor('h')
-        
+
         # Group by all dimensions we need later
         hourly_agg = df.groupby(['start_hour', 'start_station_id', 'member_casual', 'rideable_type']).size().reset_index(name='count')
         all_hourly_list.append(hourly_agg)
-        
+
         # 3. CRITICAL: Delete CSV immediately after processing
         print(f"🧹 Deleting raw data for {ym}...")
         os.remove(csv_path)
@@ -287,25 +313,24 @@ def run_pipeline():
     # Combine all hourly aggregates
     print("🏗️ Finalizing Global Aggregates...")
     full_hourly = pd.concat(all_hourly_list)
-    
+
     # Filter for Top 3 Stations
     full_hourly = full_hourly[full_hourly['start_station_id'].isin(top3_ids)]
-    
+
     # Pivot to get Member/Casual and Bike Type columns
-    # We aggregate counts per start_hour for the Top 3 stations combined
-    # (Since we are building a "Top 3 Fleet Demand" model)
     final_pivot = full_hourly.groupby(['start_hour', 'member_casual']).agg({'count': 'sum'}).unstack(fill_value=0)
     final_pivot.columns = final_pivot.columns.get_level_values(1)
-    
+
     bike_pivot = full_hourly.groupby(['start_hour', 'rideable_type']).agg({'count': 'sum'}).unstack(fill_value=0)
-    
+    bike_pivot.columns = bike_pivot.columns.get_level_values(1)
+
     features_df = pd.concat([final_pivot, bike_pivot], axis=1).fillna(0).reset_index()
-    
+
     # Ensure consistent column naming
     for col in ['member', 'casual', 'electric_bike', 'classic_bike']:
         if col not in features_df.columns:
             features_df[col] = 0
-            
+
     features_df['total_trips'] = features_df.get('member', 0) + features_df.get('casual', 0)
 
     # 4. Feature Engineering (Lags & Time Context)
@@ -313,38 +338,27 @@ def run_pipeline():
     features_df = features_df.sort_values('start_hour')
     for lag in range(1, 29):
         features_df[f'lag_{lag}'] = features_df['total_trips'].shift(lag)
-    
+
     features_df['hour'] = features_df['start_hour'].dt.hour
     features_df['day_of_week'] = features_df['start_hour'].dt.dayofweek
     features_df['is_weekend'] = features_df['day_of_week'].isin([5, 6]).astype(int)
     features_df['month'] = features_df['start_hour'].dt.month
-    
+
     features_df = features_df.dropna().reset_index(drop=True)
-    
-    # Export locally
+
+    # Export locally (kept for debugging)
     local_parquet = os.path.join(DATA_FOLDER, "final_features.parquet")
     features_df.to_parquet(local_parquet, index=False)
-    print(f"💾 Features exported: {local_parquet}")
+    print(f"💾 Features exported locally: {local_parquet}")
 
-    # 5. Cloud Upload
+    # 5. Upload features to Hopsworks Feature Store
+    upload_features_to_hopsworks(features_df)
+
+    # 6. Monthly Dashboard Stats (for the Next.js frontend — still served from S3)
     bucket = os.getenv('AWS_S3_BUCKET')
-    if bucket:
-        # 5a. Stable Pointer
-        upload_to_s3(local_parquet, bucket, "citi_bike/forecast_features.parquet")
-        
-        # 5b. Timestamped Snapshot (Archive)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        snapshot_path = f"citi_bike/archive/features_{timestamp}.parquet"
-        upload_to_s3(local_parquet, bucket, snapshot_path)
-    else:
-        print("⚠️ AWS_S3_BUCKET not found. Skipping cloud sync.")
-
-    # 6. Monthly Dashboard Stats (for the Next.js frontend)
-    # Processes the most recent month with full columns (routes, geo, durations)
-    # and uploads monthly_stats.json to S3 so the deployed frontend can read it.
-    most_recent_month = months[0]  # months[0] is the most recent (last month)
+    most_recent_month = months[0]
     generate_monthly_stats(most_recent_month, bucket)
 
 if __name__ == "__main__":
     run_pipeline()
-    print("\n✨ GitHub Action Optimized Pipeline Complete!")
+    print("\n✨ Pipeline Complete!")

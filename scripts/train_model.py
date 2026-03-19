@@ -2,28 +2,28 @@
 train_model.py
 
 Advanced MLOps Pipeline:
-1. Data Source: AWS S3 (Parquet).
-2. Data Drift: Evidently AI (Reference vs. Current).
-3. Challenger vs. Champion: Automated model promotion based on MAE.
-4. Logging: MLflow (Tracking) + S3 (Production Weights).
+1. Data Source: Hopsworks Feature Store.
+2. Challenger vs. Champion: Automated model promotion based on MAE.
+3. Logging: MLflow (experiment tracking) + Hopsworks Model Registry (weights).
+4. Metrics: Saved to S3 as JSON for the Next.js frontend.
 """
 
 import os
+import shutil
 from datetime import datetime
+import json
+import math
+import uuid
 import pandas as pd
 import lightgbm as lgb
 import mlflow
 import mlflow.lightgbm
 import boto3
-import shutil
-import uuid
 import joblib
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 from dotenv import load_dotenv
+import hopsworks
 
-# Evidently AI for Drift
-from evidently import Report
-from evidently.presets import DataDriftPreset
 # === CONFIG & LOAD ENV ===
 load_dotenv()
 DATA_FOLDER = "data"
@@ -31,19 +31,8 @@ os.makedirs(DATA_FOLDER, exist_ok=True)
 
 # === UTILITIES ===
 
-def download_from_s3(bucket, s3_path, local_path):
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
-    )
-    try:
-        s3.download_file(bucket, s3_path, local_path)
-        return local_path
-    except:
-        return None
-
 def upload_to_s3(local_file, bucket, s3_path):
+    """Uploads a file to S3 (used only for frontend-serving files)."""
     s3 = boto3.client(
         's3',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
@@ -56,44 +45,36 @@ def get_rmse(y_true, y_pred):
         from sklearn.metrics import root_mean_squared_error
         return root_mean_squared_error(y_true, y_pred)
     except ImportError:
-        from sklearn.metrics import mean_squared_error
         return mean_squared_error(y_true, y_pred, squared=False)
 
-def run_drift_report(reference, current):
-    """Generates a data drift report using Evidently AI."""
-    print("📡 Monitoring Data Drift...")
-    drift_report = Report(metrics=[
-        DataDriftPreset(),
-    ])
-    
-    # In modern Evidently, run() returns a snapshot containing the results
-    snapshot = drift_report.run(reference_data=reference, current_data=current)
-    
-    report_path = os.path.join(DATA_FOLDER, "drift_report.html")
-    snapshot.save_html(report_path)
-    return report_path, snapshot.dict()
+def connect_to_hopsworks():
+    project = hopsworks.login(
+        api_key_value=os.getenv('HOPSWORKS_API_KEY'),
+        project=os.getenv('HOPSWORKS_PROJECT'),
+    )
+    return project
 
 def train_and_log():
     bucket = os.getenv('AWS_S3_BUCKET')
-    s3_feature_path = "citi_bike/forecast_features.parquet"
-    local_feature_path = os.path.join(DATA_FOLDER, "features_for_training.parquet")
-    
-    if not download_from_s3(bucket, s3_feature_path, local_feature_path):
-        print("❌ Features not found on S3.")
-        return
 
-    df = pd.read_parquet(local_feature_path)
-    
+    # 1. LOAD FEATURES FROM HOPSWORKS FEATURE STORE
+    print("🔗 Connecting to Hopsworks...")
+    project = connect_to_hopsworks()
+    fs = project.get_feature_store()
+    mr = project.get_model_registry()
+
+    print("📥 Reading features from Hopsworks Feature Store...")
+    fg = fs.get_feature_group("forecast_features", version=1)
+    df = fg.read()
+
     # Ensure all columns are standard numpy-compatible types
-    # pyarrow-backed types (int64[pyarrow]) cause issues with legacy numpy functions & LightGBM
     for col in df.columns:
         if pd.api.types.is_extension_array_dtype(df[col]):
             df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
-            
+
     df = df.sort_values('start_hour').reset_index(drop=True)
 
-    # 1. Split Data for Training and Drift Analysis
-    # Reference: Older 80%, Current: Newest 20%
+    # 2. Split Data (Reference: older 80%, Current: newest 20%)
     split_idx = int(len(df) * 0.8)
     train_df = df.iloc[:split_idx]
     test_df = df.iloc[split_idx:]
@@ -103,103 +84,84 @@ def train_and_log():
     features = lags + categorical
     target = 'total_trips'
 
-    # 2. DRIFT DETECTION
-    report_html, report_dict = run_drift_report(
-        train_df[features + [target]], 
-        test_df[features + [target]]
-    )
-    
-    # Extract dataset drift status from the modern Evidently report structure
-    try:
-        # The first metric in DataDriftPreset is typically the DatasetDriftMetric
-        drift_detected = report_dict['metrics'][0]['value']['dataset_drift']
-    except (KeyError, IndexError):
-        drift_detected = False
-    
-    print(f"📊 Data Drift Detected: {drift_detected}")
-
     # 3. TRAINING (Challenger)
     print("🚀 Training Challenger Model...")
     challenger = lgb.LGBMRegressor(n_estimators=1000, learning_rate=0.05, random_state=42)
-    
-    # Categorical features must be explicitly passed to LightGBM for best performance
     cat_features = ['hour', 'day_of_week', 'is_weekend', 'month']
     challenger.fit(
-        train_df[features], 
-        train_df[target], 
+        train_df[features],
+        train_df[target],
         eval_set=[(test_df[features], test_df[target])],
         categorical_feature=cat_features,
         callbacks=[lgb.early_stopping(stopping_rounds=50)]
     )
-    
+
     challenger_preds = challenger.predict(test_df[features])
     challenger_mae = mean_absolute_error(test_df[target], challenger_preds)
     print(f"🏆 Challenger MAE: {challenger_mae:.4f}")
 
-    # 4. DOWNLOAD CHAMPION (Current Production)
-    s3_prod_path = "models/production_model.joblib"
-    local_prod_path = os.path.join(DATA_FOLDER, "champion_model.joblib")
+    # 4. LOAD CHAMPION FROM HOPSWORKS MODEL REGISTRY
     champion_mae = float('inf')
-    
-    if download_from_s3(bucket, s3_prod_path, local_prod_path):
-        print("🛡️ Champion found. Evaluating performance...")
-        champion = joblib.load(local_prod_path)
+    try:
+        print("🛡️ Fetching champion from Hopsworks Model Registry...")
+        champion_meta = mr.get_best_model("demand_forecaster", metric="MAE", direction="min")
+        model_dir = champion_meta.download()
+        champion = joblib.load(os.path.join(model_dir, "production_model.joblib"))
         champion_preds = champion.predict(test_df[features])
         champion_mae = mean_absolute_error(test_df[target], champion_preds)
         print(f"👑 Champion MAE: {champion_mae:.4f}")
-    else:
-        print("🆕 No Champion found in S3. Challenger will be promoted automatically.")
+    except Exception as e:
+        print(f"🆕 No champion found in registry ({e}). Challenger will be promoted automatically.")
 
     # 5. MLFLOW LOGGING
+    promotion_status = "Rejected"
     mlflow_uri = os.getenv('MLFLOW_TRACKING_URI')
-    if mlflow_uri: mlflow.set_tracking_uri(mlflow_uri)
+    if mlflow_uri:
+        mlflow.set_tracking_uri(mlflow_uri)
 
     with mlflow.start_run(run_name=f"LGBM_Run_{uuid.uuid4().hex[:4]}"):
-        mlflow.log_params({"drift_status": drift_detected, "challenger_mae": challenger_mae, "champion_mae": champion_mae})
+        mlflow.log_params({
+            "challenger_mae": challenger_mae,
+            "champion_mae": champion_mae if champion_mae != float('inf') else None,
+        })
         mlflow.log_metric("MAE", challenger_mae)
-        mlflow.log_metric("Drift_Detected", int(drift_detected))
-        mlflow.log_artifact(report_html, "drift_reports")
-        
+
         # 6. PROMOTION LOGIC
         if challenger_mae < champion_mae:
-            print("🎊 CHALLENGER IS BETTER! Promoting to Production...")
-            joblib.dump(challenger, "production_model.joblib")
-            
-            # 6a. Stable Champion Pointer
-            upload_to_s3("production_model.joblib", bucket, s3_prod_path)
-            
-            # 6b. Timestamped Snapshot (Archive)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            snapshot_path = f"models/archive/model_{timestamp}.joblib"
-            upload_to_s3("production_model.joblib", bucket, snapshot_path)
-            
+            print("🎊 CHALLENGER IS BETTER! Promoting to Hopsworks Model Registry...")
+            promotion_status = "Promoted"
+
+            # Save model to a temp directory and push to Hopsworks
+            model_export_dir = os.path.join(DATA_FOLDER, "model_export")
+            os.makedirs(model_export_dir, exist_ok=True)
+            joblib.dump(challenger, os.path.join(model_export_dir, "production_model.joblib"))
+
+            hw_model = mr.python.create_model(
+                name="demand_forecaster",
+                metrics={"MAE": challenger_mae},
+                description="LightGBM demand forecaster — Citi Bike top-3 stations",
+            )
+            hw_model.save(model_export_dir)
+            shutil.rmtree(model_export_dir)
+            print("✅ Challenger promoted to Hopsworks Model Registry.")
+
             mlflow.set_tag("status", "Promoted")
-            # log_model uses a newer MLflow API (create_logged_model) that some
-            # remote tracking servers (e.g. DagsHub free tier) may not support yet.
-            # Wrap so a server-side 500 never kills the pipeline — the model is
-            # already safely promoted to S3 above.
             try:
                 mlflow.lightgbm.log_model(challenger, "model")
             except Exception as log_model_err:
                 print(f"⚠️ mlflow.log_model skipped (tracking server error): {log_model_err}")
-            os.remove("production_model.joblib")
         else:
-            print("✋ Champion remains superior. Decline promotion.")
+            print("✋ Champion remains superior. Declining promotion.")
             mlflow.set_tag("status", "Rejected")
-            promotion_status = "Rejected"
 
-    # 7. SAVE EVALUATION METRICS TO S3
+    # 7. SAVE EVALUATION METRICS TO S3 (frontend reads this)
     print("📈 Computing model evaluation metrics...")
-    import json, math
-    from sklearn.metrics import mean_absolute_percentage_error
-
     challenger_rmse = math.sqrt(mean_squared_error(test_df[target], challenger_preds))
     try:
         challenger_mape = mean_absolute_percentage_error(test_df[target], challenger_preds) * 100
     except Exception:
         challenger_mape = None
 
-    # Feature importances (top 10)
     fi = dict(zip(features, map(float, challenger.feature_importances_)))
     top_features = dict(sorted(fi.items(), key=lambda x: x[1], reverse=True)[:10])
     total_fi = sum(top_features.values()) or 1
@@ -215,7 +177,6 @@ def train_and_log():
         "n_features": len(features),
         "n_estimators": challenger.best_iteration_ if hasattr(challenger, 'best_iteration_') else challenger.n_estimators,
         "top_features": top_features_pct,
-        "drift_detected": bool(drift_detected),
         "promotion_status": promotion_status,
         "run_date": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -223,8 +184,12 @@ def train_and_log():
     metrics_local = os.path.join(DATA_FOLDER, "model_metrics.json")
     with open(metrics_local, "w") as f:
         json.dump(metrics_payload, f, indent=2)
-    upload_to_s3(metrics_local, bucket, "models/model_metrics.json")
-    print(f"✅ Metrics saved: MAE={metrics_payload['mae']} | RMSE={metrics_payload['rmse']} | Status={promotion_status}")
+
+    if bucket:
+        upload_to_s3(metrics_local, bucket, "models/model_metrics.json")
+        print(f"✅ Metrics uploaded to S3: MAE={metrics_payload['mae']} | Status={promotion_status}")
+    else:
+        print(f"⚠️ AWS_S3_BUCKET not set. Metrics saved locally only.")
 
     print("✨ Pipeline Complete.")
 

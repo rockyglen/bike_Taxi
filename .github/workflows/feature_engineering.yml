@@ -24,9 +24,8 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+        HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+        HOPSWORKS_HOST: ${{ secrets.HOPSWORKS_HOST }}
       run: |
         uv run scripts/feature_engineering.py
-
-    - name: Keep Runner Alive (S3 Upload)
-      if: success()
-      run: echo "Dataset successfully uploaded to S3."
