@@ -20,6 +20,7 @@ import mlflow
 import mlflow.lightgbm
 import boto3
 import joblib
+import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 from dotenv import load_dotenv
 import hopsworks
@@ -40,6 +41,10 @@ def upload_to_s3(local_file, bucket, s3_path):
     )
     s3.upload_file(local_file, bucket, s3_path)
 
+def wmape(y_true, y_pred):
+    """Weighted MAPE — weights each error by actual volume, so low-traffic hours don't dominate."""
+    return float(np.sum(np.abs(y_true - y_pred)) / np.sum(y_true) * 100)
+
 def get_rmse(y_true, y_pred):
     try:
         from sklearn.metrics import root_mean_squared_error
@@ -58,12 +63,12 @@ def train_and_log():
     bucket = os.getenv('AWS_S3_BUCKET')
 
     # 1. LOAD FEATURES FROM HOPSWORKS FEATURE STORE
-    print("🔗 Connecting to Hopsworks...")
+    print(" Connecting to Hopsworks...")
     project = connect_to_hopsworks()
     fs = project.get_feature_store()
     mr = project.get_model_registry()
 
-    print("📥 Reading features from Hopsworks Feature Store...")
+    print(" Reading features from Hopsworks Feature Store...")
     fg = fs.get_feature_group("forecast_features", version=1)
     df = fg.read()
 
@@ -85,7 +90,7 @@ def train_and_log():
     target = 'total_trips'
 
     # 3. TRAINING (Challenger)
-    print("🚀 Training Challenger Model...")
+    print(" Training Challenger Model...")
     challenger = lgb.LGBMRegressor(n_estimators=1000, learning_rate=0.05, random_state=42)
     cat_features = ['hour', 'day_of_week', 'is_weekend', 'month']
     challenger.fit(
@@ -98,20 +103,20 @@ def train_and_log():
 
     challenger_preds = challenger.predict(test_df[features])
     challenger_mae = mean_absolute_error(test_df[target], challenger_preds)
-    print(f"🏆 Challenger MAE: {challenger_mae:.4f}")
+    print(f" Challenger MAE: {challenger_mae:.4f}")
 
     # 4. LOAD CHAMPION FROM HOPSWORKS MODEL REGISTRY
     champion_mae = float('inf')
     try:
-        print("🛡️ Fetching champion from Hopsworks Model Registry...")
+        print(" Fetching champion from Hopsworks Model Registry...")
         champion_meta = mr.get_best_model("demand_forecaster", metric="MAE", direction="min")
         model_dir = champion_meta.download()
         champion = joblib.load(os.path.join(model_dir, "production_model.joblib"))
         champion_preds = champion.predict(test_df[features])
         champion_mae = mean_absolute_error(test_df[target], champion_preds)
-        print(f"👑 Champion MAE: {champion_mae:.4f}")
+        print(f" Champion MAE: {champion_mae:.4f}")
     except Exception as e:
-        print(f"🆕 No champion found in registry ({e}). Challenger will be promoted automatically.")
+        print(f" No champion found in registry ({e}). Challenger will be promoted automatically.")
 
     # 5. MLFLOW LOGGING
     promotion_status = "Rejected"
@@ -128,7 +133,7 @@ def train_and_log():
 
         # 6. PROMOTION LOGIC
         if challenger_mae < champion_mae:
-            print("🎊 CHALLENGER IS BETTER! Promoting to Hopsworks Model Registry...")
+            print(" CHALLENGER IS BETTER! Promoting to Hopsworks Model Registry...")
             promotion_status = "Promoted"
 
             # Save model to a temp directory and push to Hopsworks
@@ -143,22 +148,22 @@ def train_and_log():
             )
             hw_model.save(model_export_dir)
             shutil.rmtree(model_export_dir)
-            print("✅ Challenger promoted to Hopsworks Model Registry.")
+            print(" Challenger promoted to Hopsworks Model Registry.")
 
             mlflow.set_tag("status", "Promoted")
             try:
                 mlflow.lightgbm.log_model(challenger, "model")
             except Exception as log_model_err:
-                print(f"⚠️ mlflow.log_model skipped (tracking server error): {log_model_err}")
+                print(f" mlflow.log_model skipped (tracking server error): {log_model_err}")
         else:
-            print("✋ Champion remains superior. Declining promotion.")
+            print(" Champion remains superior. Declining promotion.")
             mlflow.set_tag("status", "Rejected")
 
     # 7. SAVE EVALUATION METRICS TO S3 (frontend reads this)
-    print("📈 Computing model evaluation metrics...")
+    print(" Computing model evaluation metrics...")
     challenger_rmse = math.sqrt(mean_squared_error(test_df[target], challenger_preds))
     try:
-        challenger_mape = mean_absolute_percentage_error(test_df[target], challenger_preds) * 100
+        challenger_mape = wmape(test_df[target].values, challenger_preds)
     except Exception:
         challenger_mape = None
 
@@ -170,7 +175,7 @@ def train_and_log():
     metrics_payload = {
         "mae": round(float(challenger_mae), 4),
         "rmse": round(float(challenger_rmse), 4),
-        "mape": round(float(challenger_mape), 2) if challenger_mape is not None else None,
+        "mape": round(float(challenger_mape), 2) if challenger_mape is not None else None,  # WMAPE (volume-weighted)
         "champion_mae": round(float(champion_mae), 4) if champion_mae != float('inf') else None,
         "n_train": len(train_df),
         "n_test": len(test_df),
@@ -187,11 +192,11 @@ def train_and_log():
 
     if bucket:
         upload_to_s3(metrics_local, bucket, "models/model_metrics.json")
-        print(f"✅ Metrics uploaded to S3: MAE={metrics_payload['mae']} | Status={promotion_status}")
+        print(f" Metrics uploaded to S3: MAE={metrics_payload['mae']} | Status={promotion_status}")
     else:
-        print(f"⚠️ AWS_S3_BUCKET not set. Metrics saved locally only.")
+        print(f" AWS_S3_BUCKET not set. Metrics saved locally only.")
 
-    print("✨ Pipeline Complete.")
+    print(" Pipeline Complete.")
 
 if __name__ == "__main__":
     train_and_log()

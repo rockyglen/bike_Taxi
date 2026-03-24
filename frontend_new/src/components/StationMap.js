@@ -36,7 +36,7 @@ export default function StationMap({ data }) {
 
     return (
         <div className="chart-container">
-            <h3 className="section-title mb-4">🗺️ System Demand Heatmap</h3>
+            <h3 className="section-title mb-4"> System Demand Heatmap</h3>
             <ResponsiveContainer width="100%" height={500}>
                 <ScatterChart margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
                     <XAxis

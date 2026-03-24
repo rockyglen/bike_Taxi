@@ -11,7 +11,7 @@ import {
     ChevronDown, ChevronUp, CheckCircle, Activity,
 } from 'lucide-react';
 
-// ─── Pipeline Stage Card ─────────────────────────────────────────────────────
+//  Pipeline Stage Card 
 function PipelineStage({ icon: Icon, title, subtitle, badge, delay = 0 }) {
     return (
         <motion.div
@@ -38,7 +38,7 @@ function PipelineStage({ icon: Icon, title, subtitle, badge, delay = 0 }) {
     );
 }
 
-// ─── Stat Pill ────────────────────────────────────────────────────────────────
+//  Stat Pill 
 function StatPill({ value, label }) {
     return (
         <div className="rounded-full border border-white/10 bg-white/5 px-4 py-1.5">
@@ -48,7 +48,7 @@ function StatPill({ value, label }) {
     );
 }
 
-// ─── Live Dot ─────────────────────────────────────────────────────────────────
+//  Live Dot 
 function LiveDot() {
     return (
         <span className="relative flex h-2.5 w-2.5">
@@ -58,7 +58,7 @@ function LiveDot() {
     );
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+//  Main Page 
 export default function LiveDashboard() {
     const { data, error, loading, lastRefreshed, refresh } = useAutoRefresh('/api/predictions', 30 * 60 * 1000);
     const { data: metricsData } = useAutoRefresh('/api/model-metrics', 60 * 60 * 1000);
@@ -71,7 +71,7 @@ export default function LiveDashboard() {
         setIsRefreshing(false);
     };
 
-    // ── Loading ──
+    //  Loading 
     if (loading) {
         return (
             <div className="flex min-h-[70vh] flex-col items-center justify-center gap-4">
@@ -81,11 +81,11 @@ export default function LiveDashboard() {
         );
     }
 
-    // ── Error ──
+    //  Error 
     if (error) {
         return (
             <div className="flex min-h-[70vh] flex-col items-center justify-center gap-4 text-center">
-                <p className="text-xl font-bold text-nyc-red">❌ {error}</p>
+                <p className="text-xl font-bold text-nyc-red"> {error}</p>
                 <p className="text-sm text-white/40">Trigger the inference pipeline to generate predictions:</p>
                 <code className="rounded-xl bg-white/5 px-5 py-3 text-sm text-white/60">
                     uv run scripts/inference.py
@@ -99,7 +99,7 @@ export default function LiveDashboard() {
     return (
         <div className="space-y-12">
 
-            {/* ── HERO ── */}
+            {/*  HERO  */}
             <motion.section
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -113,7 +113,7 @@ export default function LiveDashboard() {
                 <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
                     <div>
                         <div className="mb-4 flex flex-wrap items-center gap-3">
-                            <span className="rush-badge">🚀 Live System</span>
+                            <span className="rush-badge"> Live System</span>
                             <div className="flex items-center gap-2 rounded-full border border-green-500/30 bg-green-500/10 px-3 py-1">
                                 <LiveDot />
                                 <span className="text-xs font-semibold text-green-400">Inference running hourly</span>
@@ -164,7 +164,7 @@ export default function LiveDashboard() {
                 </div>
             </motion.section>
 
-            {/* ── ML PIPELINE CARDS ── */}
+            {/*  ML PIPELINE CARDS  */}
             <section>
                 <div className="mb-4 flex items-center gap-2">
                     <GitBranch size={16} className="text-nyc-red" />
@@ -175,27 +175,27 @@ export default function LiveDashboard() {
                         icon={Database}
                         title="Feature Engineering"
                         subtitle="Runs 1st of every month · GitHub Actions"
-                        badge="✓ Automated"
+                        badge=" Automated"
                         delay={0.05}
                     />
                     <PipelineStage
                         icon={BarChart2}
                         title="Champion/Challenger Training"
                         subtitle="LightGBM · Drift detection · MLflow tracked"
-                        badge="✓ Automated"
+                        badge=" Automated"
                         delay={0.1}
                     />
                     <PipelineStage
                         icon={Zap}
                         title="Recursive Bridge Inference"
                         subtitle="Runs hourly · Bridges 20-day data lag"
-                        badge="✓ Automated"
+                        badge=" Automated"
                         delay={0.15}
                     />
                 </div>
             </section>
 
-            {/* ── LIVE FORECAST METRICS ── */}
+            {/*  LIVE FORECAST METRICS  */}
             <section>
                 <div className="mb-4 flex items-center gap-2">
                     <Activity size={16} className="text-nyc-red" />
@@ -235,13 +235,13 @@ export default function LiveDashboard() {
                 </div>
             </section>
 
-            {/* ── FORECAST CHART + SIDEBAR ── */}
+            {/*  FORECAST CHART + SIDEBAR  */}
             <section className="flex flex-col gap-6 lg:flex-row">
                 <div className="flex-1">
                     <DemandAreaChart data={predictions} />
                     {/* Recursive Bridge annotation */}
                     <div className="mt-3 flex items-start gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-3">
-                        <span className="mt-0.5 text-base">🌉</span>
+                        <span className="mt-0.5 text-base"></span>
                         <div>
                             <p className="text-xs font-bold text-blue-300">Recursive Bridge Active</p>
                             <p className="text-xs text-white/40">
@@ -282,7 +282,7 @@ export default function LiveDashboard() {
                                         ? 'bg-green-500/10 text-green-400'
                                         : 'bg-white/5 text-white/40'
                                     }`}>
-                                    <span>{metricsData.promotion_status === 'Promoted' ? '🎊' : '✋'}</span>
+                                    <span>{metricsData.promotion_status === 'Promoted' ? '' : ''}</span>
                                     <span>{metricsData.promotion_status === 'Promoted' ? 'Challenger Promoted' : 'Champion Retained'}</span>
                                 </div>
 
@@ -350,7 +350,7 @@ export default function LiveDashboard() {
                         <div className="mt-3">
                             {summary.rushStart ? (
                                 <div className="rounded-lg bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
-                                    ⚠️ High demand between{' '}
+                                     High demand between{' '}
                                     <span className="font-bold">{summary.rushStart?.split(',')[1]?.trim() || summary.rushStart}</span>
                                     {' '}and{' '}
                                     <span className="font-bold">{summary.rushEnd?.split(',')[1]?.trim() || summary.rushEnd}</span>
@@ -381,13 +381,13 @@ Img:     Docker + uv`}
                 </div>
             </section>
 
-            {/* ── DATA EXPLORER ── */}
+            {/*  DATA EXPLORER  */}
             <section>
                 <button
                     onClick={() => setShowTable(!showTable)}
                     className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.02] px-6 py-4 text-sm font-semibold text-white/50 transition-colors hover:text-white"
                 >
-                    <span>🛠️ Developer Inspection — Raw Prediction Data</span>
+                    <span> Developer Inspection — Raw Prediction Data</span>
                     {showTable ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                 </button>
                 {showTable && (

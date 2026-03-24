@@ -19,7 +19,7 @@ export default function DonutChart({ data }) {
 
     return (
         <div className="chart-container">
-            <h3 className="section-title mb-4">🚲 Rideable Preferences</h3>
+            <h3 className="section-title mb-4"> Rideable Preferences</h3>
             <ResponsiveContainer width="100%" height={350}>
                 <PieChart>
                     <Pie

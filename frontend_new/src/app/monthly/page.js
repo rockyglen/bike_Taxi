@@ -46,7 +46,7 @@ export default function MonthlyInsights() {
         return (
             <div className="flex min-h-[60vh] items-center justify-center">
                 <div className="max-w-lg text-center">
-                    <p className="text-lg font-bold text-yellow-400">⚠️ Monthly stats not yet on S3.</p>
+                    <p className="text-lg font-bold text-yellow-400"> Monthly stats not yet on S3.</p>
                     <div className="mt-4 text-left text-sm text-white/60">
                         <p className="mb-3">Run the feature engineering pipeline to generate them:</p>
                         <code className="block rounded-lg bg-white/5 px-4 py-2 text-xs text-white/70">
@@ -103,7 +103,7 @@ export default function MonthlyInsights() {
                         <DurationChart data={durationData} />
                         <HBarChart
                             data={topRoutes.map((r) => ({ label: r.route, count: r.count }))}
-                            title="🔄 High-Traffic Routes (O-D Pairs)"
+                            title=" High-Traffic Routes (O-D Pairs)"
                             color="#ff4b4b"
                         />
                     </div>
@@ -114,7 +114,7 @@ export default function MonthlyInsights() {
                     {/* Row 4: Top Stations */}
                     <HBarChart
                         data={topStations.map((s) => ({ label: s.station, count: s.count }))}
-                        title="📍 Operational Hubs: Top 10 Stations"
+                        title=" Operational Hubs: Top 10 Stations"
                         color="#00d4ff"
                     />
                 </div>

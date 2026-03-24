@@ -32,7 +32,7 @@ export default function DurationChart({ data }) {
 
     return (
         <div className="chart-container">
-            <h3 className="section-title mb-4">⏱️ Trip Duration Distribution</h3>
+            <h3 className="section-title mb-4">⏱ Trip Duration Distribution</h3>
             <ResponsiveContainer width="100%" height={350}>
                 <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />

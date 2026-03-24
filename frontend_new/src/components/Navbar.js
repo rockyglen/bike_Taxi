@@ -17,7 +17,7 @@ export default function Navbar() {
             <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
                 {/* Logo */}
                 <Link href="/" className="flex items-center gap-3 group">
-                    <span className="text-2xl">🏙️</span>
+                    <span className="text-2xl"></span>
                     <div>
                         <span className="font-display text-lg font-bold tracking-tight text-white">
                             NYC Citi Bike

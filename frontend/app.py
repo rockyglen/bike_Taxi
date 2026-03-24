@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # === PAGE CONFIG ===
 st.set_page_config(
     page_title="NYC Citi Bike | Demand Intelligence",
-    page_icon="🏙️",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -110,12 +110,12 @@ def download_and_load_data():
         filtered_df = df[df['target_hour'] >= now_nyc].copy()
         
         if filtered_df.empty:
-            st.sidebar.warning("⚠️ No future predictions found. Showing latest available cache.")
+            st.sidebar.warning(" No future predictions found. Showing latest available cache.")
             return df.tail(24) 
             
         return filtered_df
     except Exception as e:
-        st.error(f"❌ Data Load Error: {e}")
+        st.error(f" Data Load Error: {e}")
         return None
 
 # === DASHBOARD CONTENT ===
@@ -183,12 +183,12 @@ if df is not None:
     # --- SIDEBAR INSIGHTS ---
     with st.sidebar:
         # Using a reliable image source for the NYC skyline or Citi Bike motif
-        st.markdown("### 🗽 NYC Fleet Intelligence")
-        st.markdown("### ⚙️ System Intelligence")
+        st.markdown("###  NYC Fleet Intelligence")
+        st.markdown("###  System Intelligence")
         st.info("Model: **LGBM-V4-Recursive**")
         
         st.divider()
-        st.markdown("### 🚇 Rush Hour Alert")
+        st.markdown("###  Rush Hour Alert")
         # Refined logic: Only alert if demand is 25% above the 24h average
         avg_demand = df['predicted_trips'].mean()
         rush_hours = df[df['predicted_trips'] > avg_demand * 1.25]
@@ -201,15 +201,15 @@ if df is not None:
             st.success("No critical peak demand expected.")
             
         st.divider()
-        st.markdown("### 📊 Architecture")
+        st.markdown("###  Architecture")
         st.code(f"AWS Region: us-east-1\nStorage: S3 Parquet\nMLflow: Tracked\nArchived: Versioned", language="ini")
 
     # --- DATA EXPLORER ---
-    with st.expander("🛠️ Developer Inspection Corner"):
+    with st.expander(" Developer Inspection Corner"):
         st.dataframe(df.style.highlight_max(axis=0, subset=['predicted_trips'], color='#ff4b4b'), use_container_width=True)
 
 else:
-    st.error("🚀 High-performance Data Stream not found. Please trigger the Inference Pipeline.")
+    st.error(" High-performance Data Stream not found. Please trigger the Inference Pipeline.")
     st.code("uv run scripts/inference.py")
 
 # Footer

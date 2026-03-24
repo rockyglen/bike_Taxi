@@ -38,7 +38,7 @@ def run_inference():
     bucket = os.getenv('AWS_S3_BUCKET')
 
     # 1. Connect to Hopsworks
-    print("🔗 Connecting to Hopsworks...")
+    print(" Connecting to Hopsworks...")
     project = hopsworks.login(
         api_key_value=os.getenv('HOPSWORKS_API_KEY'),
         project=os.getenv('HOPSWORKS_PROJECT'),
@@ -47,18 +47,18 @@ def run_inference():
     mr = project.get_model_registry()
 
     # 2. Download champion model from Model Registry
-    print("📥 Fetching champion model from Hopsworks Model Registry...")
+    print(" Fetching champion model from Hopsworks Model Registry...")
     try:
         model_meta = mr.get_best_model("demand_forecaster", metric="MAE", direction="min")
     except Exception as e:
-        print(f"❌ Could not fetch model from registry: {e}")
+        print(f" Could not fetch model from registry: {e}")
         return
     model_dir = model_meta.download()
     model = joblib.load(os.path.join(model_dir, "production_model.joblib"))
-    print("✅ Model loaded.")
+    print(" Model loaded.")
 
     # 3. Read latest features from Feature Store
-    print("📥 Reading features from Hopsworks Feature Store...")
+    print(" Reading features from Hopsworks Feature Store...")
     fg = fs.get_feature_group("forecast_features", version=1)
     df = fg.read()
 
@@ -89,7 +89,7 @@ def run_inference():
 
     hours_to_now = int((now_utc - last_known_hour).total_seconds() / 3600)
 
-    print(f"🌉 Bridging {hours_to_now}h gap from {last_known_hour} to reach current time...")
+    print(f" Bridging {hours_to_now}h gap from {last_known_hour} to reach current time...")
 
     current_state = df.iloc[-1].copy()
 
@@ -112,7 +112,7 @@ def run_inference():
         current_state['month'] = this_time.month
 
     # Step B: Generate the actual 24h forecast
-    print("🔮 Generating live 24h forecast...")
+    print(" Generating live 24h forecast...")
     predictions = []
     bridge_end_time = last_known_hour + timedelta(hours=hours_to_now)
 
@@ -138,7 +138,7 @@ def run_inference():
 
     # 5. Save and Upload Predictions to S3 (frontend reads this)
     if not predictions:
-        print("⚠️ No predictions generated for the requested window.")
+        print(" No predictions generated for the requested window.")
         return
 
     pred_df = pd.DataFrame(predictions)
@@ -154,9 +154,9 @@ def run_inference():
         # Timestamped snapshot
         timestamp = now_utc.strftime("%Y%m%d_%H%M")
         upload_to_s3(local_preds, bucket, f"citi_bike/archive/predictions_{timestamp}.parquet")
-        print(f"✅ Inference complete. Predictions uploaded to S3.")
+        print(f" Inference complete. Predictions uploaded to S3.")
     else:
-        print(f"⚠️ AWS_S3_BUCKET not set. Predictions saved locally only.")
+        print(f" AWS_S3_BUCKET not set. Predictions saved locally only.")
 
 if __name__ == "__main__":
     run_inference()

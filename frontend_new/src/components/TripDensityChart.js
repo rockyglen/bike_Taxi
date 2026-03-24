@@ -32,7 +32,7 @@ export default function TripDensityChart({ data }) {
 
     return (
         <div className="chart-container">
-            <h3 className="section-title mb-4">📈 Temporal Trip Density</h3>
+            <h3 className="section-title mb-4"> Temporal Trip Density</h3>
             <ResponsiveContainer width="100%" height={350}>
                 <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                     <defs>

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # === PAGE CONFIG ===
 st.set_page_config(
     page_title="NYC Citi Bike | Monthly Insights",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -97,7 +97,7 @@ if df is not None:
     left_col, right_col = st.columns([2, 1])
 
     with left_col:
-        st.markdown("### 📈 Temporal Trip Density")
+        st.markdown("###  Temporal Trip Density")
         # Hourly density chart
         hourly_counts = df.groupby(['hour', 'member_casual']).size().reset_index(name='count')
         chart = alt.Chart(hourly_counts).mark_area(opacity=0.6).encode(
@@ -109,7 +109,7 @@ if df is not None:
         st.altair_chart(chart, use_container_width=True)
 
     with right_col:
-        st.markdown("### 🚲 Rideable Preferences")
+        st.markdown("###  Rideable Preferences")
         rideable_counts = df['rideable_type'].value_counts().reset_index()
         rideable_counts.columns = ['type', 'count']
         donut = alt.Chart(rideable_counts).mark_arc(innerRadius=50).encode(
@@ -126,7 +126,7 @@ if df is not None:
     mid_col1, mid_col2 = st.columns(2)
     
     with mid_col1:
-        st.markdown("### ⏱️ Trip Duration Distribution")
+        st.markdown("### ⏱ Trip Duration Distribution")
         # Sample for density chart to keep interactive
         duration_chart = alt.Chart(df.sample(min(10000, len(df)))).mark_area(
             opacity=0.5,
@@ -140,7 +140,7 @@ if df is not None:
         st.altair_chart(duration_chart, use_container_width=True)
 
     with mid_col2:
-        st.markdown("### 🔄 High-Traffic Routes (O-D Pairs)")
+        st.markdown("###  High-Traffic Routes (O-D Pairs)")
         top_routes = df['route'].value_counts().head(10).reset_index()
         top_routes.columns = ['route', 'count']
         route_bar = alt.Chart(top_routes).mark_bar(color='#ff4b4b', cornerRadiusTopRight=10).encode(
@@ -153,7 +153,7 @@ if df is not None:
     st.write("###")
     
     # --- GEOSPATIAL HEATMAP (Using Scatter as proxy) ---
-    st.markdown("### 🗺️ System Demand Heatmap")
+    st.markdown("###  System Demand Heatmap")
     # Clustering stations for a cleaner map view
     map_data = df.groupby(['start_station_name', 'start_lat', 'start_lng']).size().reset_index(name='count')
     
@@ -174,7 +174,7 @@ if df is not None:
     st.write("###")
     
     # --- TOP STATIONS ---
-    st.markdown("### 📍 Operational Hubs: Top 10 Stations")
+    st.markdown("###  Operational Hubs: Top 10 Stations")
     top_stations = df['start_station_name'].value_counts().head(10).reset_index()
     top_stations.columns = ['station', 'count']
     bar = alt.Chart(top_stations).mark_bar(color='#00d4ff', cornerRadiusTopRight=10).encode(
@@ -186,19 +186,19 @@ if df is not None:
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.markdown("### 🗽 Analysis Context")
+        st.markdown("###  Analysis Context")
         st.info("Month: **December 2025**\n\nDataset: **Citi Bike Open Data**")
         st.divider()
-        st.markdown("### 💡 AI Insights")
+        st.markdown("###  AI Insights")
         st.write("Analysis shows a strong preference for electric bikes during peak hours, particularly among casual riders.")
         st.divider()
-        st.markdown("### 🛠️ Data Source")
+        st.markdown("###  Data Source")
         st.code("S3: tripdata/202512...")
 
 else:
-    st.warning("⚠️ Monthly data file not found.")
+    st.warning(" Monthly data file not found.")
     st.markdown("""
-    ### 🛠️ How to resolve this:
+    ###  How to resolve this:
     1. Open the [03_Monthly_Analysis.ipynb](file:///Users/glenlouis/Coding/ML/bike_Taxi/notebooks/03_Monthly_Analysis.ipynb) notebook.
     2. **Run the first cell**. It contains a built-in script to download and extract the dataset for you.
     3. Refresh this page once the download is complete.
