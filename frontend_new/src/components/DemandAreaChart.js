@@ -22,7 +22,7 @@ function CustomTooltip({ active, payload, label }) {
     );
 }
 
-export default function DemandAreaChart({ data, stationIds }) {
+export default function DemandAreaChart({ data, stationIds, stationNames = {} }) {
     if (!data || data.length === 0) return null;
 
     const stations = stationIds && stationIds.length > 0 ? stationIds : [];
@@ -79,7 +79,7 @@ export default function DemandAreaChart({ data, stationIds }) {
                             key={sid}
                             type="monotone"
                             dataKey={sid}
-                            name={`Station ${i + 1}`}
+                            name={stationNames[sid] || `Station ${i + 1}`}
                             stroke={STATION_COLORS[i] || '#fff'}
                             strokeWidth={2}
                             dot={false}

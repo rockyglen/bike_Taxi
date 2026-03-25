@@ -124,7 +124,7 @@ def upload_features_to_hopsworks(df):
     print(" Features inserted into Hopsworks Feature Store.")
 
 
-def generate_monthly_stats(ym, bucket):
+def generate_monthly_stats(ym, bucket, top_station_names=None):
     """
     Downloads the most recent month's CSV with full columns and computes
     all aggregates needed by the Monthly Insights dashboard, then uploads
@@ -235,6 +235,7 @@ def generate_monthly_stats(ym, bucket):
             'peakHour': peak_hour,
             'fileName': f'{ym}-citibike-tripdata.csv',
         },
+        'topStationNames': top_station_names or {},
         'hourlyDensity': hourly_density,
         'rideableData': rideable_data,
         'durationData': duration_data,
@@ -262,6 +263,7 @@ def run_pipeline():
     months = get_last_12_months()
 
     station_counter = Counter()
+    station_name_map = {}  # station_id -> station_name
     all_hourly_list = []
 
     print(f" Starting Optimized Pipeline for {len(months)} months...")
@@ -276,20 +278,35 @@ def run_pipeline():
         try:
             df = pd.read_csv(
                 csv_path,
-                usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
+                usecols=['started_at', 'start_station_id', 'start_station_name', 'member_casual', 'rideable_type'],
                 engine='pyarrow',
                 dtype_backend='pyarrow'
             )
         except:
-            # Fallback if pyarrow engine fails for any reason
-            df = pd.read_csv(
-                csv_path,
-                usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
-                low_memory=False
-            )
+            # Fallback if pyarrow engine fails or start_station_name is missing
+            try:
+                df = pd.read_csv(
+                    csv_path,
+                    usecols=['started_at', 'start_station_id', 'start_station_name', 'member_casual', 'rideable_type'],
+                    low_memory=False
+                )
+            except:
+                df = pd.read_csv(
+                    csv_path,
+                    usecols=['started_at', 'start_station_id', 'member_casual', 'rideable_type'],
+                    low_memory=False
+                )
 
         # 1. Update Global Station Counts
         station_counter.update(df['start_station_id'].dropna().astype(str))
+
+        # Collect station_id -> name mapping (take first non-null name seen per station)
+        if 'start_station_name' in df.columns:
+            name_df = df[['start_station_id', 'start_station_name']].dropna()
+            name_df['start_station_id'] = name_df['start_station_id'].astype(str)
+            for sid, name in name_df.drop_duplicates('start_station_id').values:
+                if sid not in station_name_map:
+                    station_name_map[sid] = name
 
         # 2. Interim Hourly Aggregation (Saves memory over 12 months)
         df['start_hour'] = pd.to_datetime(df['started_at']).dt.floor('h')
@@ -349,7 +366,8 @@ def run_pipeline():
     # 6. Monthly Dashboard Stats (for the Next.js frontend — still served from S3)
     bucket = os.getenv('AWS_S3_BUCKET')
     most_recent_month = months[0]
-    generate_monthly_stats(most_recent_month, bucket)
+    top_station_names = {sid: station_name_map.get(sid, sid) for sid in top3_ids}
+    generate_monthly_stats(most_recent_month, bucket, top_station_names)
 
 if __name__ == "__main__":
     run_pipeline()

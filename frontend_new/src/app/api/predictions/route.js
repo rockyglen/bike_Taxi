@@ -2,6 +2,18 @@ import { NextResponse } from 'next/server';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { parquetRead } from 'hyparquet';
 
+async function fetchStationNames(s3, bucket) {
+    try {
+        const cmd = new GetObjectCommand({ Bucket: bucket, Key: 'citi_bike/monthly_stats.json' });
+        const res = await s3.send(cmd);
+        const text = await res.Body.transformToString();
+        const json = JSON.parse(text);
+        return json.topStationNames || {};
+    } catch {
+        return {};
+    }
+}
+
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
@@ -81,6 +93,9 @@ export async function GET() {
             generatedAt: resolveTimestamp(typeof row[4] === 'bigint' ? Number(row[4]) : row[4]),
         }));
 
+        // Fetch station name mapping from monthly_stats.json (best-effort)
+        const stationNames = await fetchStationNames(s3, bucket);
+
         // Collect unique station IDs ordered by rank
         const stationMap = new Map();
         for (const r of parsed) {
@@ -131,6 +146,7 @@ export async function GET() {
 
         return NextResponse.json({
             stationIds,
+            stationNames,
             predictions,
             summary: {
                 liveForecast: predictions[0]?.totalTrips || 0,

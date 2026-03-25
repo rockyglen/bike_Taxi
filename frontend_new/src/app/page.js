@@ -94,7 +94,7 @@ export default function LiveDashboard() {
         );
     }
 
-    const { predictions, summary, stationIds = [] } = data;
+    const { predictions, summary, stationIds = [], stationNames = {} } = data;
 
     return (
         <div className="space-y-12">
@@ -238,7 +238,7 @@ export default function LiveDashboard() {
             {/*  FORECAST CHART + SIDEBAR  */}
             <section className="flex flex-col gap-6 lg:flex-row">
                 <div className="flex-1">
-                    <DemandAreaChart data={predictions} stationIds={stationIds} />
+                    <DemandAreaChart data={predictions} stationIds={stationIds} stationNames={stationNames} />
                     {/* Recursive Bridge annotation */}
                     <div className="mt-3 flex items-start gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-3">
                         <span className="mt-0.5 text-base"></span>
@@ -398,7 +398,7 @@ Img:     Docker + uv`}
                                     <th className="pb-2 pr-4 font-semibold text-white/30">Time (ET)</th>
                                     <th className="pb-2 pr-4 font-semibold text-white/30">Total Trips/hr</th>
                                     {stationIds.map((sid, i) => (
-                                        <th key={sid} className="pb-2 pr-4 font-semibold text-white/30">Station {i + 1}</th>
+                                        <th key={sid} className="pb-2 pr-4 font-semibold text-white/30">{stationNames[sid] || `Station ${i + 1}`}</th>
                                     ))}
                                     <th className="pb-2 font-semibold text-white/30">Generated At (ET)</th>
                                 </tr>
