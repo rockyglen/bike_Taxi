@@ -115,9 +115,9 @@ def upload_features_to_hopsworks(df):
     fg = fs.get_or_create_feature_group(
         name="forecast_features",
         version=1,
-        primary_key=["start_hour"],
+        primary_key=["start_hour", "station_id"],
         event_time="start_hour",
-        description="Hourly Citi Bike demand features (top-3 stations, 28 lags)",
+        description="Hourly Citi Bike demand features (top-3 stations, per-station, 28 lags)",
     )
     print(" Inserting features into Hopsworks Feature Store...")
     fg.insert(df_insert, write_options={"wait_for_job": True})
@@ -317,34 +317,26 @@ def run_pipeline():
     # Filter for Top 3 Stations
     full_hourly = full_hourly[full_hourly['start_station_id'].isin(top3_ids)]
 
-    # Pivot to get Member/Casual and Bike Type columns
-    final_pivot = full_hourly.groupby(['start_hour', 'member_casual']).agg({'count': 'sum'}).unstack(fill_value=0)
-    final_pivot.columns = final_pivot.columns.get_level_values(1)
+    # Aggregate to hourly totals per station (keep stations separate)
+    station_df = full_hourly.groupby(['start_hour', 'start_station_id'])['count'].sum().reset_index()
+    station_df.columns = ['start_hour', 'station_id', 'total_trips']
 
-    bike_pivot = full_hourly.groupby(['start_hour', 'rideable_type']).agg({'count': 'sum'}).unstack(fill_value=0)
-    bike_pivot.columns = bike_pivot.columns.get_level_values(1)
+    # Rank stations by overall volume (0 = busiest, 1 = 2nd, 2 = 3rd)
+    station_rank_map = {sid: rank for rank, sid in enumerate(top3_ids)}
+    station_df['station_rank'] = station_df['station_id'].map(station_rank_map).astype(int)
 
-    features_df = pd.concat([final_pivot, bike_pivot], axis=1).fillna(0).reset_index()
-
-    # Ensure consistent column naming
-    for col in ['member', 'casual', 'electric_bike', 'classic_bike']:
-        if col not in features_df.columns:
-            features_df[col] = 0
-
-    features_df['total_trips'] = features_df.get('member', 0) + features_df.get('casual', 0)
-
-    # 4. Feature Engineering (Lags & Time Context)
-    print(" Generating 28-hour Lags...")
-    features_df = features_df.sort_values('start_hour')
+    # 4. Feature Engineering (Lags & Time Context) — computed per station
+    print(" Generating 28-hour Lags per station...")
+    station_df = station_df.sort_values(['station_id', 'start_hour'])
     for lag in range(1, 29):
-        features_df[f'lag_{lag}'] = features_df['total_trips'].shift(lag)
+        station_df[f'lag_{lag}'] = station_df.groupby('station_id')['total_trips'].shift(lag)
 
-    features_df['hour'] = features_df['start_hour'].dt.hour
-    features_df['day_of_week'] = features_df['start_hour'].dt.dayofweek
-    features_df['is_weekend'] = features_df['day_of_week'].isin([5, 6]).astype(int)
-    features_df['month'] = features_df['start_hour'].dt.month
+    station_df['hour'] = station_df['start_hour'].dt.hour
+    station_df['day_of_week'] = station_df['start_hour'].dt.dayofweek
+    station_df['is_weekend'] = station_df['day_of_week'].isin([5, 6]).astype(int)
+    station_df['month'] = station_df['start_hour'].dt.month
 
-    features_df = features_df.dropna().reset_index(drop=True)
+    features_df = station_df.dropna().reset_index(drop=True)
 
     # Export locally (kept for debugging)
     local_parquet = os.path.join(DATA_FOLDER, "final_features.parquet")

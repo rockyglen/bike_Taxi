@@ -85,14 +85,14 @@ def train_and_log():
     test_df = df.iloc[split_idx:]
 
     lags = [f'lag_{i}' for i in range(1, 29)]
-    categorical = ['hour', 'day_of_week', 'is_weekend', 'month']
+    categorical = ['hour', 'day_of_week', 'is_weekend', 'month', 'station_rank']
     features = lags + categorical
     target = 'total_trips'
 
     # 3. TRAINING (Challenger)
     print(" Training Challenger Model...")
     challenger = lgb.LGBMRegressor(n_estimators=1000, learning_rate=0.05, random_state=42)
-    cat_features = ['hour', 'day_of_week', 'is_weekend', 'month']
+    cat_features = ['hour', 'day_of_week', 'is_weekend', 'month', 'station_rank']
     challenger.fit(
         train_df[features],
         train_df[target],

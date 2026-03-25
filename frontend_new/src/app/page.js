@@ -94,7 +94,7 @@ export default function LiveDashboard() {
         );
     }
 
-    const { predictions, summary } = data;
+    const { predictions, summary, stationIds = [] } = data;
 
     return (
         <div className="space-y-12">
@@ -238,7 +238,7 @@ export default function LiveDashboard() {
             {/*  FORECAST CHART + SIDEBAR  */}
             <section className="flex flex-col gap-6 lg:flex-row">
                 <div className="flex-1">
-                    <DemandAreaChart data={predictions} />
+                    <DemandAreaChart data={predictions} stationIds={stationIds} />
                     {/* Recursive Bridge annotation */}
                     <div className="mt-3 flex items-start gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-3">
                         <span className="mt-0.5 text-base"></span>
@@ -396,17 +396,23 @@ Img:     Docker + uv`}
                             <thead>
                                 <tr className="border-b border-white/10">
                                     <th className="pb-2 pr-4 font-semibold text-white/30">Time (ET)</th>
-                                    <th className="pb-2 pr-4 font-semibold text-white/30">Predicted Trips/hr</th>
+                                    <th className="pb-2 pr-4 font-semibold text-white/30">Total Trips/hr</th>
+                                    {stationIds.map((sid, i) => (
+                                        <th key={sid} className="pb-2 pr-4 font-semibold text-white/30">Station {i + 1}</th>
+                                    ))}
                                     <th className="pb-2 font-semibold text-white/30">Generated At (ET)</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {predictions.map((row, i) => {
-                                    const isPeak = row.predictedTrips === summary.peakDemand;
+                                    const isPeak = row.totalTrips === summary.peakDemand;
                                     return (
                                         <tr key={i} className={`border-b border-white/5 ${isPeak ? 'bg-nyc-red/10 text-nyc-red' : ''}`}>
                                             <td className="py-1.5 pr-4 font-mono">{row.targetHourET}</td>
-                                            <td className={`py-1.5 pr-4 font-mono font-bold ${isPeak ? 'text-nyc-red' : ''}`}>{row.predictedTrips}</td>
+                                            <td className={`py-1.5 pr-4 font-mono font-bold ${isPeak ? 'text-nyc-red' : ''}`}>{row.totalTrips}</td>
+                                            {stationIds.map((sid) => (
+                                                <td key={sid} className="py-1.5 pr-4 font-mono text-white/50">{row[sid] ?? '—'}</td>
+                                            ))}
                                             <td className="py-1.5 font-mono text-white/30">{row.generatedAtET}</td>
                                         </tr>
                                     );

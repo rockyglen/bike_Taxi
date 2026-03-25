@@ -1,35 +1,46 @@
 'use client';
 
 import {
-    AreaChart, Area, XAxis, YAxis, CartesianGrid,
-    Tooltip, ResponsiveContainer, Brush,
+    LineChart, Line, XAxis, YAxis, CartesianGrid,
+    Tooltip, Legend, ResponsiveContainer, Brush,
 } from 'recharts';
+
+const STATION_COLORS = ['#ff4b4b', '#38bdf8', '#4ade80'];
 
 function CustomTooltip({ active, payload, label }) {
     if (!active || !payload?.length) return null;
     return (
         <div className="rounded-xl border border-white/10 bg-nyc-dark/95 px-4 py-3 shadow-glass backdrop-blur-xl">
-            <p className="text-xs font-medium text-white/60">{label}</p>
-            <p className="mt-1 text-lg font-bold text-nyc-red">
-                {payload[0].value?.toFixed(1)} <span className="text-xs font-normal text-white/40">trips/hr</span>
-            </p>
+            <p className="text-xs font-medium text-white/60 mb-2">{label}</p>
+            {payload.map((entry) => (
+                <p key={entry.dataKey} className="text-sm font-bold" style={{ color: entry.color }}>
+                    {entry.name}: {entry.value?.toFixed(1)}{' '}
+                    <span className="text-xs font-normal text-white/40">trips/hr</span>
+                </p>
+            ))}
         </div>
     );
 }
 
-export default function DemandAreaChart({ data }) {
+export default function DemandAreaChart({ data, stationIds }) {
     if (!data || data.length === 0) return null;
 
-    // Format data for Recharts
-    const chartData = data.map((d) => ({
-        time: new Date(d.targetHour).toLocaleTimeString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            timeZone: 'America/New_York',
-        }),
-        trips: d.predictedTrips,
-        rawTime: d.targetHour,
-    }));
+    const stations = stationIds && stationIds.length > 0 ? stationIds : [];
+
+    const chartData = data.map((d) => {
+        const point = {
+            time: new Date(d.targetHour).toLocaleTimeString('en-US', {
+                hour: 'numeric',
+                minute: '2-digit',
+                timeZone: 'America/New_York',
+            }),
+            rawTime: d.targetHour,
+        };
+        for (const sid of stations) {
+            point[sid] = d[sid] ?? 0;
+        }
+        return point;
+    });
 
     return (
         <div className="chart-container">
@@ -37,13 +48,7 @@ export default function DemandAreaChart({ data }) {
                 <span className="rush-badge">24H Projection Horizon</span>
             </div>
             <ResponsiveContainer width="100%" height={400}>
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                    <defs>
-                        <linearGradient id="tripGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#ff4b4b" stopOpacity={0.4} />
-                            <stop offset="100%" stopColor="#ff4b4b" stopOpacity={0.02} />
-                        </linearGradient>
-                    </defs>
+                <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                     <XAxis
                         dataKey="time"
@@ -62,14 +67,25 @@ export default function DemandAreaChart({ data }) {
                         }}
                     />
                     <Tooltip content={<CustomTooltip />} />
-                    <Area
-                        type="monotone"
-                        dataKey="trips"
-                        stroke="#ff4b4b"
-                        strokeWidth={3}
-                        fill="url(#tripGradient)"
-                        animationDuration={1500}
+                    <Legend
+                        formatter={(value, entry, index) => (
+                            <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11 }}>
+                                Station {index + 1}
+                            </span>
+                        )}
                     />
+                    {stations.map((sid, i) => (
+                        <Line
+                            key={sid}
+                            type="monotone"
+                            dataKey={sid}
+                            name={`Station ${i + 1}`}
+                            stroke={STATION_COLORS[i] || '#fff'}
+                            strokeWidth={2}
+                            dot={false}
+                            animationDuration={1500}
+                        />
+                    ))}
                     <Brush
                         dataKey="time"
                         height={40}
@@ -77,7 +93,7 @@ export default function DemandAreaChart({ data }) {
                         fill="#161b22"
                         travellerWidth={8}
                     />
-                </AreaChart>
+                </LineChart>
             </ResponsiveContainer>
         </div>
     );

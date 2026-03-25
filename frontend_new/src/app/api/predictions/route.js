@@ -13,18 +13,24 @@ const s3 = new S3Client({
     },
 });
 
-/**
- * Converts a UTC date to US/Eastern timezone string.
- */
 function toEastern(dateStr) {
     const d = new Date(dateStr);
     return d.toLocaleString('en-US', { timeZone: 'America/New_York' });
 }
 
+function resolveTimestamp(val) {
+    if (val instanceof Date) return val;
+    if (typeof val === 'number') {
+        return val > 1e15 ? new Date(val / 1000) : new Date(val);
+    }
+    return new Date(val);
+}
+
 /**
  * GET /api/predictions
- * Downloads latest_predictions.parquet from S3, parses, filters future rows,
- * and returns JSON with predictions + metadata.
+ * Downloads latest_predictions.parquet from S3 (multi-station schema):
+ *   columns: station_id, station_rank, target_hour, predicted_trips, prediction_generated_at
+ * Returns per-station predictions pivoted by hour, plus aggregate summary.
  */
 export async function GET() {
     try {
@@ -36,7 +42,6 @@ export async function GET() {
             );
         }
 
-        // Download parquet from S3
         const command = new GetObjectCommand({
             Bucket: bucket,
             Key: 'citi_bike/latest_predictions.parquet',
@@ -45,14 +50,11 @@ export async function GET() {
         const response = await s3.send(command);
         const bodyBytes = await response.Body.transformToByteArray();
 
-        // Convert Uint8Array → ArrayBuffer, hyparquet requires slice() to return ArrayBuffer
-        // Use .buffer with offset correction to avoid subarray pitfalls
         const arrayBuffer = bodyBytes.buffer.slice(
             bodyBytes.byteOffset,
             bodyBytes.byteOffset + bodyBytes.byteLength
         );
 
-        // Parse parquet — file.slice must return ArrayBuffer (not Uint8Array)
         const rows = [];
         await parquetRead({
             file: {
@@ -66,82 +68,75 @@ export async function GET() {
             },
         });
 
-
         if (rows.length === 0) {
             return NextResponse.json({ error: 'No data in parquet file' }, { status: 404 });
         }
 
-        // The parquet columns are: target_hour, predicted_trips, prediction_generated_at
-        // Determine column order from first row
-        const predictions = rows.map((row) => {
-            // hyparquet returns arrays, column order matches parquet schema
-            const targetHour = row[0]; // timestamp
-            const predictedTrips = row[1]; // float
-            const generatedAt = row[2]; // timestamp
+        // Parquet column order: station_id, station_rank, target_hour, predicted_trips, prediction_generated_at
+        const parsed = rows.map((row) => ({
+            stationId: String(row[0]),
+            stationRank: typeof row[1] === 'bigint' ? Number(row[1]) : Number(row[1]),
+            targetHour: resolveTimestamp(typeof row[2] === 'bigint' ? Number(row[2]) : row[2]),
+            predictedTrips: Math.round(Number(row[3]) * 10) / 10,
+            generatedAt: resolveTimestamp(typeof row[4] === 'bigint' ? Number(row[4]) : row[4]),
+        }));
 
-            return {
-                targetHour: typeof targetHour === 'bigint' ? Number(targetHour) : targetHour,
-                predictedTrips: typeof predictedTrips === 'bigint' ? Number(predictedTrips) : Number(predictedTrips),
-                generatedAt: typeof generatedAt === 'bigint' ? Number(generatedAt) : generatedAt,
-            };
-        });
+        // Collect unique station IDs ordered by rank
+        const stationMap = new Map();
+        for (const r of parsed) {
+            if (!stationMap.has(r.stationRank)) {
+                stationMap.set(r.stationRank, r.stationId);
+            }
+        }
+        const stationIds = [...stationMap.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([, id]) => id);
 
-        // Convert timestamps and filter to future hours
+        // Pivot: group by targetHour, one entry per hour with a value per station
         const now = new Date();
-        const nowEastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const byHour = new Map();
 
-        const processed = predictions
-            .map((p) => {
-                // Handle parquet timestamps (could be ms since epoch or Date objects)
-                let targetDate;
-                if (typeof p.targetHour === 'number') {
-                    // If the number looks like microseconds (very large), convert
-                    targetDate = p.targetHour > 1e15 ? new Date(p.targetHour / 1000) : new Date(p.targetHour);
-                } else if (p.targetHour instanceof Date) {
-                    targetDate = p.targetHour;
-                } else {
-                    targetDate = new Date(p.targetHour);
-                }
+        for (const r of parsed) {
+            const key = r.targetHour.toISOString();
+            if (!byHour.has(key)) {
+                byHour.set(key, {
+                    targetHour: r.targetHour.toISOString(),
+                    targetHourET: toEastern(r.targetHour),
+                    generatedAt: r.generatedAt.toISOString(),
+                    generatedAtET: toEastern(r.generatedAt),
+                    totalTrips: 0,
+                });
+            }
+            const entry = byHour.get(key);
+            entry[r.stationId] = r.predictedTrips;
+            entry.totalTrips = Math.round((entry.totalTrips + r.predictedTrips) * 10) / 10;
+        }
 
-                let generatedDate;
-                if (typeof p.generatedAt === 'number') {
-                    generatedDate = p.generatedAt > 1e15 ? new Date(p.generatedAt / 1000) : new Date(p.generatedAt);
-                } else if (p.generatedAt instanceof Date) {
-                    generatedDate = p.generatedAt;
-                } else {
-                    generatedDate = new Date(p.generatedAt);
-                }
+        let predictions = [...byHour.values()].sort(
+            (a, b) => new Date(a.targetHour) - new Date(b.targetHour)
+        );
 
-                return {
-                    targetHour: targetDate.toISOString(),
-                    targetHourET: toEastern(targetDate),
-                    predictedTrips: Math.round(p.predictedTrips * 10) / 10,
-                    generatedAt: generatedDate.toISOString(),
-                    generatedAtET: toEastern(generatedDate),
-                };
-            })
-            .sort((a, b) => new Date(a.targetHour) - new Date(b.targetHour));
+        // Filter to future hours; fallback to last 24
+        const futureOnly = predictions.filter((p) => new Date(p.targetHour) >= now);
+        predictions = futureOnly.length > 0 ? futureOnly : predictions.slice(-24);
 
-        // Filter: only show predictions from current hour onwards
-        // If all predictions are in the past, show latest 24 as fallback
-        const futureOnly = processed.filter((p) => new Date(p.targetHour) >= now);
-        const result = futureOnly.length > 0 ? futureOnly : processed.slice(-24);
-
-        // Compute summary stats
-        const peakRow = result.reduce((max, r) => r.predictedTrips > max.predictedTrips ? r : max, result[0]);
-        const avgDemand = result.reduce((sum, r) => sum + r.predictedTrips, 0) / result.length;
-
-        // Rush hour detection: hours where demand > 125% of average
+        // Summary based on aggregate (totalTrips)
+        const peakRow = predictions.reduce(
+            (max, r) => r.totalTrips > max.totalTrips ? r : max,
+            predictions[0]
+        );
+        const avgDemand = predictions.reduce((sum, r) => sum + r.totalTrips, 0) / predictions.length;
         const rushThreshold = avgDemand * 1.25;
-        const rushHours = result.filter((r) => r.predictedTrips > rushThreshold);
+        const rushHours = predictions.filter((r) => r.totalTrips > rushThreshold);
 
         return NextResponse.json({
-            predictions: result,
+            stationIds,
+            predictions,
             summary: {
-                liveForecast: result[0]?.predictedTrips || 0,
-                peakDemand: peakRow?.predictedTrips || 0,
+                liveForecast: predictions[0]?.totalTrips || 0,
+                peakDemand: peakRow?.totalTrips || 0,
                 peakHourET: peakRow?.targetHourET || '',
-                lastSyncET: result[0]?.generatedAtET || '',
+                lastSyncET: predictions[0]?.generatedAtET || '',
                 avgDemand: Math.round(avgDemand * 10) / 10,
                 rushHours: rushHours.map((r) => r.targetHourET),
                 rushStart: rushHours.length > 0 ? rushHours[0].targetHourET : null,
